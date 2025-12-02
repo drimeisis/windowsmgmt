@@ -1,6 +1,6 @@
 <# 
     Server2025_Baseline.ps1
-    v1.3 - Final Corrected Version
+    v1.3
 #>
 
 Configuration Server2025_Baseline {
@@ -38,9 +38,6 @@ Configuration Server2025_Baseline {
             Network_access_Do_not_allow_anonymous_enumeration_of_SAM_accounts = 'Enabled'
             Network_access_Do_not_allow_anonymous_enumeration_of_SAM_accounts_and_shares = 'Enabled'
             Network_access_Restrict_anonymous_access_to_Named_Pipes_and_Shares = 'Enabled'
-            
-            # NOTE: 'Restrict_clients_allowed_to_make_remote_calls_to_SAM' is removed from here 
-            # and handled via Registry below to prevent DSC Schema crashes.
 
             # Network Security
             Network_security_LAN_Manager_authentication_level = 'Send NTLMv2 responses only. Refuse LM & NTLM'
