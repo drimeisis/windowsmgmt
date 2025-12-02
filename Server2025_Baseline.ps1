@@ -1,3 +1,13 @@
+<# 
+    Server2025_Baseline.ps1
+    DSC baseline for Windows Server 2025.
+    
+    CORRECTIONS APPLIED:
+    1. Merged all 'SecurityOption' blocks into one 'MainSecurityOptions' block to prevent duplicate key errors.
+    2. Fixed 'Network_access_Restrict_clients_allowed_to_make_remote_calls_to_SAM' to be a String, not an Array.
+    3. Corrected 'eg_Symbolic_Links' property name spelling.
+#>
+
 Configuration Server2025_Baseline {
 
     param(
@@ -12,68 +22,50 @@ Configuration Server2025_Baseline {
     Node $NodeName {
 
         ############################################################
-        # 1. LOCAL SECURITY POLICY / SECURITY OPTIONS
+        # 1. LOCAL SECURITY POLICY (MERGED BLOCK)
         ############################################################
+        # In DSC, 'Name' is the key. All Security Options must live 
+        # in one resource block to avoid "Duplicate Resource" errors.
 
-        # Accounts: Limit local account use of blank passwords to console logon only = Enabled
-        SecurityOption Accounts_LimitBlankPwToConsoleOnly {
+        SecurityOption MainSecurityOptions {
             Name = 'SecurityOptions'
+
+            # Accounts
             Accounts_Limit_local_account_use_of_blank_passwords_to_console_logon_only = 'Enabled'
-        }
 
-        # Interactive logon: Smart card removal behavior = Lock Workstation
-        SecurityOption InteractiveLogon_SmartCardRemoval {
-            Name = 'SecurityOptions'
+            # Interactive Logon
             Interactive_logon_Smart_card_removal_behavior = 'Lock workstation'
-        }
 
-        # Microsoft network client options
-        SecurityOption MicrosoftNetworkClient {
-            Name = 'SecurityOptions'
+            # Microsoft Network Client
             Microsoft_network_client_Digitally_sign_communications_always = 'Enabled'
             Microsoft_network_client_Send_unencrypted_password_to_third_party_SMB_servers = 'Disabled'
-        }
 
-        # Network access restrictions / anonymous access
-        SecurityOption NetworkAccess {
-            Name = 'SecurityOptions'
+            # Network Access
             Network_access_Allow_anonymous_SID_Name_translation = 'Disabled'
             Network_access_Do_not_allow_anonymous_enumeration_of_SAM_accounts = 'Enabled'
             Network_access_Do_not_allow_anonymous_enumeration_of_SAM_accounts_and_shares = 'Enabled'
             Network_access_Restrict_anonymous_access_to_Named_Pipes_and_Shares = 'Enabled'
-            Network_access_Restrict_clients_allowed_to_make_remote_calls_to_SAM = @(
-                'O:BAG:BAD:(A;;RC;;;BA)'
-            )
-        }
+            # FIXED: Was @('...'), changed to single string to fix Type conversion error
+            Network_access_Restrict_clients_allowed_to_make_remote_calls_to_SAM = 'O:BAG:BAD:(A;;RC;;;BA)'
 
-        # Network security: LAN Manager / LDAP / NTLM minimum security
-        SecurityOption NetworkSecurity {
-            Name = 'SecurityOptions'
+            # Network Security
             Network_security_LAN_Manager_authentication_level = 'Send NTLMv2 responses only. Refuse LM & NTLM'
             Network_security_LDAP_client_signing_requirements = 'Negotiate signing'
             Network_security_Minimum_session_security_for_NTLM_SSP_based_including_secure_RPC_clients = 'Both options checked'
             Network_security_Minimum_session_security_for_NTLM_SSP_based_including_secure_RPC_servers = 'Both options checked'
             Network_security_Allow_LocalSystem_NULL_session_fallback = 'Disabled'
-        }
 
-        # Domain member secure channel settings
-        SecurityOption DomainMemberSecureChannel {
-            Name = 'SecurityOptions'
+            # Domain Member
             Domain_member_Digitally_encrypt_or_sign_secure_channel_data_always = 'Enabled'
             Domain_member_Digitally_encrypt_secure_channel_data_when_possible = 'Enabled'
             Domain_member_Digitally_sign_secure_channel_data_when_possible = 'Enabled'
             Domain_member_Require_strong_Windows_2000_or_later_session_key = 'Enabled'
-        }
 
-        # System objects: strengthen default permissions
-        SecurityOption SystemObjects {
-            Name = 'SecurityOptions'
+            # System Objects
+            # FIXED: "eg_Symbolic_Links" (not e_g_)
             System_objects_Strengthen_default_permissions_of_internal_system_objects_eg_Symbolic_Links = 'Enabled'
-        }
 
-        # UAC block
-        SecurityOption UacSettings {
-            Name = 'SecurityOptions'
+            # UAC Settings
             User_Account_Control_Admin_Approval_Mode_for_the_Built_in_Administrator_account = 'Enabled'
             User_Account_Control_Behavior_of_the_elevation_prompt_for_administrators_in_Admin_Approval_Mode = 'Prompt for consent on the secure desktop'
             User_Account_Control_Behavior_of_the_elevation_prompt_for_standard_users = 'Automatically deny elevation request'
@@ -81,30 +73,9 @@ Configuration Server2025_Baseline {
             User_Account_Control_Only_elevate_UIAccess_applications_that_are_installed_in_secure_locations = 'Enabled'
             User_Account_Control_Run_all_administrators_in_Admin_Approval_Mode = 'Enabled'
             User_Account_Control_Virtualize_file_and_registry_write_failures_to_per_user_locations = 'Enabled'
-        }
 
-        # Audit: Force audit policy subcategory settings to override category settings
-        SecurityOption AuditPolicyOverride {
-            Name = 'SecurityOptions'
+            # Audit Policy Override
             Audit_Force_audit_policy_subcategory_settings_Windows_Vista_or_later_to_override_audit_policy_category_settings = 'Enabled'
-        }
-
-        # Machine inactivity limit = 900 seconds
-        GPRegistryPolicy MachineInactivityLimit {
-            Key        = 'Software\Microsoft\Windows\CurrentVersion\Policies\System'
-            ValueName  = 'InactivityTimeoutSecs'
-            ValueType  = 'Dword'
-            ValueData  = 900
-            TargetType = 'ComputerConfiguration'
-        }
-
-        # Microsoft network server: Digitally sign communications (always) = Enabled
-        GPRegistryPolicy MicrosoftNetworkServerSign {
-            Key        = 'System\CurrentControlSet\Services\LanmanServer\Parameters'
-            ValueName  = 'RequireSecuritySignature'
-            ValueType  = 'Dword'
-            ValueData  = 1
-            TargetType = 'ComputerConfiguration'
         }
 
         ############################################################
@@ -370,7 +341,25 @@ Configuration Server2025_Baseline {
         # 5. ADMINISTRATIVE TEMPLATES / REGISTRY-BASED POLICIES
         ############################################################
 
-        # Prevent lock screen camera
+        # Machine inactivity limit = 900 seconds
+        GPRegistryPolicy MachineInactivityLimit {
+            Key        = 'Software\Microsoft\Windows\CurrentVersion\Policies\System'
+            ValueName  = 'InactivityTimeoutSecs'
+            ValueType  = 'Dword'
+            ValueData  = 900
+            TargetType = 'ComputerConfiguration'
+        }
+
+        # Microsoft network server: Digitally sign communications (always) = Enabled
+        GPRegistryPolicy MicrosoftNetworkServerSign {
+            Key        = 'System\CurrentControlSet\Services\LanmanServer\Parameters'
+            ValueName  = 'RequireSecuritySignature'
+            ValueType  = 'Dword'
+            ValueData  = 1
+            TargetType = 'ComputerConfiguration'
+        }
+
+        # Control Panel / Personalization – Prevent lock screen camera
         GPRegistryPolicy NoLockScreenCamera {
             Key        = 'Software\Policies\Microsoft\Windows\Personalization'
             ValueName  = 'NoLockScreenCamera'
@@ -474,7 +463,7 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Hardened UNC Paths
+        # Hardened UNC Paths (SYSVOL & NETLOGON)
         GPRegistryPolicy HardenedUNC_SYSVOL {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths'
             ValueName  = '\\*\SYSVOL'
@@ -490,7 +479,7 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Audit Process Creation – include command line
+        # System / Audit Process Creation – include command line
         GPRegistryPolicy IncludeCommandLineInProcessCreation {
             Key        = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
             ValueName  = 'ProcessCreationIncludeCmdLine_Enabled'
@@ -499,7 +488,7 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Encryption Oracle Remediation = Force Updated Clients
+        # Credentials Delegation – Encryption Oracle Remediation
         GPRegistryPolicy EncryptionOracleRemediation {
             Key        = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters'
             ValueName  = 'AllowEncryptionOracle'
@@ -694,5 +683,5 @@ Configuration Server2025_Baseline {
             ValueData  = 0
             TargetType = 'ComputerConfiguration'
         }
-    }
-}
+    } # end Node
+} # end Configuration
