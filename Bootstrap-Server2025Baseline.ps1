@@ -1,7 +1,7 @@
 # Bootstrap-Server2025Baseline.ps1
 
 param(
-    [string]$ConfigUrl = "https://your-repo/Server2025_Baseline.ps1",
+    [string]$ConfigUrl = "https://raw.githubusercontent.com/drimeisis/windowsmgmt/refs/heads/main/Server2025_Baseline.ps1",
     [string]$WorkDir   = "C:\DSC"
 )
 
