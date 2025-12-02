@@ -1,19 +1,19 @@
 # Bootstrap-Server2025Baseline.ps1
-# Designed for Unattended Execution via Azure Arc
+# Unattended DSC Bootstrap for Azure Arc / Windows Server 2025
 
 param(
     [string]$ConfigUrl = "https://raw.githubusercontent.com/drimeisis/windowsmgmt/refs/heads/main/Server2025_Baseline.ps1",
     [string]$WorkDir   = "C:\DSC"
 )
 
-# Standardize error preference to stop on failures
+# Stop on any error to prevent cascading failures
 $ErrorActionPreference = 'Stop'
 
 # --- 1. System Prep & Module Installation ------------------------------------
 
 Write-Host "Initializing environment..."
 
-# Enforce TLS 1.2 for PowerShell Gallery connectivity
+# Enforce TLS 1.2 (Required for PowerShell Gallery)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # Check/Install NuGet Provider with ForceBootstrap (Critical for unattended runs)
@@ -62,24 +62,35 @@ $ConfigPath = Join-Path $WorkDir "Server2025_Baseline.ps1"
 
 Write-Host "Downloading DSC configuration from $ConfigUrl ..."
 try {
-    # Download content as string first, then save as UTF8 to ensure no BOM/Encoding issues
-    $Content = (Invoke-WebRequest -Uri $ConfigUrl -UseBasicParsing).Content
-    $Content | Set-Content -Path $ConfigPath -Encoding UTF8 -Force
+    # Download content
+    $Response = Invoke-WebRequest -Uri $ConfigUrl -UseBasicParsing
+    
+    # Validation: Ensure we didn't download an HTML error page
+    if ($Response.Content -like "<!DOCTYPE html>*") {
+        Throw "The downloaded file appears to be an HTML webpage, not a raw PS1 file. Check the URL."
+    }
+
+    # Save to disk with explicit UTF8 encoding
+    $Response.Content | Set-Content -Path $ConfigPath -Encoding UTF8 -Force
+    
+    # CRITICAL: Unblock the file to prevent 'Mark of the Web' security errors
+    Unblock-File -Path $ConfigPath
 }
 catch {
-    Write-Error "Failed to download configuration file. Verify URL and Internet access."
-    # Print specific error to logs for debugging
-    Write-Host $_.Exception.Message
+    Write-Error "CRITICAL DOWNLOAD ERROR: $($_.Exception.Message)"
     exit 1
 }
 
 # --- 4. Compile DSC configuration ------------------------------------------
 
+Write-Host "Loading configuration into memory..."
 try {
-    . $ConfigPath # dot-source the configuration
+    # Dot-source the configuration file
+    . $ConfigPath
 }
 catch {
-    Write-Error "Failed to load the downloaded configuration file. The script may be corrupt."
+    Write-Error "COMPILATION ERROR: The configuration file contains syntax errors."
+    Write-Error $_.Exception.Message
     exit 1
 }
 
@@ -89,8 +100,15 @@ if (-not (Test-Path $MofOutput)) {
 }
 
 Write-Host "Compiling DSC configuration ..."
-# Assuming the configuration name inside the file is 'Server2025_Baseline'
-Server2025_Baseline -NodeName 'localhost' -OutputPath $MofOutput
+try {
+    # Generate the MOF file
+    Server2025_Baseline -NodeName 'localhost' -OutputPath $MofOutput
+}
+catch {
+    Write-Error "MOF GENERATION ERROR: $($_.Exception.Message)"
+    Write-Error "Tip: Verify property names in the GitHub script match the DSC resource definition."
+    exit 1
+}
 
 # --- 5. Configure LCM for drift correction ---------------------------------
 
@@ -98,15 +116,11 @@ Server2025_Baseline -NodeName 'localhost' -OutputPath $MofOutput
 configuration LCMConfig {
     Node 'localhost' {
         Settings {
-            # UPDATED: Must be 'Push' to allow AutoCorrect to run on a schedule. 
-            # 'Disabled' would turn off the consistency check entirely.
+            # 'Push' allows the local scheduler to run ApplyAndAutoCorrect
             RefreshMode                    = 'Push'
-            
             ConfigurationMode              = 'ApplyAndAutoCorrect'
             ConfigurationModeFrequencyMins = 30
-            
-            # NOTE: If a reboot triggers, Azure Arc may report a status of 'Failed/Cancelled' 
-            # because the script stops communicating. This is expected behavior for DSC.
+            # Note: If a reboot triggers, Azure Arc may report 'Failed' as the script exits early.
             RebootNodeIfNeeded             = $true
         }
     }
@@ -118,13 +132,26 @@ if (-not (Test-Path $LcmPath)) {
 }
 
 Write-Host "Configuring LCM ..."
-LCMConfig -OutputPath $LcmPath
-Set-DscLocalConfigurationManager -Path $LcmPath -Verbose
+try {
+    LCMConfig -OutputPath $LcmPath
+    Set-DscLocalConfigurationManager -Path $LcmPath -Verbose
+}
+catch {
+    Write-Error "LCM CONFIGURATION ERROR: $($_.Exception.Message)"
+    exit 1
+}
 
 # --- 6. Apply configuration -------------------------------------------------
 
 Write-Host "Applying DSC configuration..."
-# Wait ensures the script doesn't finish until DSC is done (unless reboot happens first)
-Start-DscConfiguration -Path $MofOutput -Force -Verbose -Wait
+try {
+    # Start-DscConfiguration will throw if it fails; -Wait ensures we see the result
+    Start-DscConfiguration -Path $MofOutput -Force -Verbose -Wait
+}
+catch {
+    # If a reboot is pending, this catch block might not execute, which is normal for DSC
+    Write-Error "CONFIGURATION APPLICATION ERROR: $($_.Exception.Message)"
+    exit 1
+}
 
 Write-Host "Baseline successfully applied. LCM is monitoring for drift."
