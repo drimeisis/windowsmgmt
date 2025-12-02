@@ -2,10 +2,11 @@
     Server2025_Baseline.ps1
     DSC baseline for Windows Server 2025.
     
-    CORRECTIONS APPLIED:
-    1. Merged all 'SecurityOption' blocks into one 'MainSecurityOptions' block to prevent duplicate key errors.
-    2. Fixed 'Network_access_Restrict_clients_allowed_to_make_remote_calls_to_SAM' to be a String, not an Array.
-    3. Corrected 'eg_Symbolic_Links' property name spelling.
+    FIXES APPLIED:
+    1. Removed 'Network_access_Restrict_clients_allowed_to_make_remote_calls_to_SAM' from SecurityOption.
+       (This property causes the 'STRING[] to INSTANCE[]' crash in DSC).
+    2. Added 'GPRegistryPolicy RestrictRemoteSam' to set that value via Registry instead.
+    3. Merged all SecurityOptions into one block.
 #>
 
 Configuration Server2025_Baseline {
@@ -24,8 +25,6 @@ Configuration Server2025_Baseline {
         ############################################################
         # 1. LOCAL SECURITY POLICY (MERGED BLOCK)
         ############################################################
-        # In DSC, 'Name' is the key. All Security Options must live 
-        # in one resource block to avoid "Duplicate Resource" errors.
 
         SecurityOption MainSecurityOptions {
             Name = 'SecurityOptions'
@@ -45,8 +44,9 @@ Configuration Server2025_Baseline {
             Network_access_Do_not_allow_anonymous_enumeration_of_SAM_accounts = 'Enabled'
             Network_access_Do_not_allow_anonymous_enumeration_of_SAM_accounts_and_shares = 'Enabled'
             Network_access_Restrict_anonymous_access_to_Named_Pipes_and_Shares = 'Enabled'
-            # FIXED: Was @('...'), changed to single string to fix Type conversion error
-            Network_access_Restrict_clients_allowed_to_make_remote_calls_to_SAM = 'O:BAG:BAD:(A;;RC;;;BA)'
+            
+            # REMOVED: Network_access_Restrict_clients_allowed_to_make_remote_calls_to_SAM
+            # We set this via GPRegistryPolicy below to avoid the MOF Schema crash.
 
             # Network Security
             Network_security_LAN_Manager_authentication_level = 'Send NTLMv2 responses only. Refuse LM & NTLM'
@@ -62,7 +62,6 @@ Configuration Server2025_Baseline {
             Domain_member_Require_strong_Windows_2000_or_later_session_key = 'Enabled'
 
             # System Objects
-            # FIXED: "eg_Symbolic_Links" (not e_g_)
             System_objects_Strengthen_default_permissions_of_internal_system_objects_eg_Symbolic_Links = 'Enabled'
 
             # UAC Settings
@@ -79,7 +78,20 @@ Configuration Server2025_Baseline {
         }
 
         ############################################################
-        # 2. FIREWALL – DOMAIN, PRIVATE, PUBLIC
+        # 1.1 WORKAROUND: Restrict Remote SAM (Registry Method)
+        ############################################################
+        
+        # This replaces the failing line in SecurityOption
+        GPRegistryPolicy RestrictRemoteSam {
+            Key        = 'SYSTEM\CurrentControlSet\Control\Lsa'
+            ValueName  = 'RestrictRemoteSAM'
+            ValueType  = 'String'
+            ValueData  = 'O:BAG:BAD:(A;;RC;;;BA)'
+            TargetType = 'ComputerConfiguration'
+        }
+
+        ############################################################
+        # 2. FIREWALL
         ############################################################
 
         FirewallProfile FirewallDomainProfile {
@@ -113,7 +125,6 @@ Configuration Server2025_Baseline {
         # 3. ADVANCED AUDIT POLICY CONFIGURATION
         ############################################################
 
-        # Account Logon
         AuditPolicySubcategory Audit_CredentialValidation_S {
             Name      = 'Credential Validation'
             AuditFlag = 'Success'
@@ -124,8 +135,6 @@ Configuration Server2025_Baseline {
             AuditFlag = 'Failure'
             Ensure    = 'Present'
         }
-
-        # Account Management
         AuditPolicySubcategory Audit_SecurityGroupManagement_S {
             Name      = 'Security Group Management'
             AuditFlag = 'Success'
@@ -141,8 +150,6 @@ Configuration Server2025_Baseline {
             AuditFlag = 'Failure'
             Ensure    = 'Present'
         }
-
-        # Detailed Tracking
         AuditPolicySubcategory Audit_PnPActivity_S {
             Name      = 'Plug and Play Events'
             AuditFlag = 'Success'
@@ -153,8 +160,6 @@ Configuration Server2025_Baseline {
             AuditFlag = 'Success'
             Ensure    = 'Present'
         }
-
-        # Logon / Logoff
         AuditPolicySubcategory Audit_AccountLockout_F {
             Name      = 'Account Lockout'
             AuditFlag = 'Failure'
@@ -190,8 +195,6 @@ Configuration Server2025_Baseline {
             AuditFlag = 'Success'
             Ensure    = 'Present'
         }
-
-        # Object Access
         AuditPolicySubcategory Audit_DetailedFileShare_F {
             Name      = 'Detailed File Share'
             AuditFlag = 'Failure'
@@ -227,8 +230,6 @@ Configuration Server2025_Baseline {
             AuditFlag = 'Failure'
             Ensure    = 'Present'
         }
-
-        # Policy Change
         AuditPolicySubcategory Audit_AuditPolicyChange_S {
             Name      = 'Audit Policy Change'
             AuditFlag = 'Success'
@@ -264,8 +265,6 @@ Configuration Server2025_Baseline {
             AuditFlag = 'Failure'
             Ensure    = 'Present'
         }
-
-        # Privilege Use
         AuditPolicySubcategory Audit_SensitivePrivilegeUse_S {
             Name      = 'Sensitive Privilege Use'
             AuditFlag = 'Success'
@@ -276,8 +275,6 @@ Configuration Server2025_Baseline {
             AuditFlag = 'Failure'
             Ensure    = 'Present'
         }
-
-        # System
         AuditPolicySubcategory Audit_OtherSystemEvents_S {
             Name      = 'Other System Events'
             AuditFlag = 'Success'
@@ -463,7 +460,7 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Hardened UNC Paths (SYSVOL & NETLOGON)
+        # Hardened UNC Paths
         GPRegistryPolicy HardenedUNC_SYSVOL {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths'
             ValueName  = '\\*\SYSVOL'
@@ -479,7 +476,7 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # System / Audit Process Creation – include command line
+        # Audit Process Creation – include command line
         GPRegistryPolicy IncludeCommandLineInProcessCreation {
             Key        = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
             ValueName  = 'ProcessCreationIncludeCmdLine_Enabled'
@@ -488,7 +485,7 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Credentials Delegation – Encryption Oracle Remediation
+        # Encryption Oracle Remediation
         GPRegistryPolicy EncryptionOracleRemediation {
             Key        = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters'
             ValueName  = 'AllowEncryptionOracle'
@@ -683,5 +680,5 @@ Configuration Server2025_Baseline {
             ValueData  = 0
             TargetType = 'ComputerConfiguration'
         }
-    } # end Node
-} # end Configuration
+    }
+}
