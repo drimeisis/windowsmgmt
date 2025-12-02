@@ -1,12 +1,6 @@
 <# 
     Server2025_Baseline.ps1
-    DSC baseline for Windows Server 2025.
-    
-    FIXES APPLIED:
-    1. Removed 'Network_access_Restrict_clients_allowed_to_make_remote_calls_to_SAM' from SecurityOption.
-       (This property causes the 'STRING[] to INSTANCE[]' crash in DSC).
-    2. Added 'GPRegistryPolicy RestrictRemoteSam' to set that value via Registry instead.
-    3. Merged all SecurityOptions into one block.
+    v1.3 - Final Corrected Version
 #>
 
 Configuration Server2025_Baseline {
@@ -25,7 +19,7 @@ Configuration Server2025_Baseline {
         ############################################################
         # 1. LOCAL SECURITY POLICY (MERGED BLOCK)
         ############################################################
-
+        
         SecurityOption MainSecurityOptions {
             Name = 'SecurityOptions'
 
@@ -45,8 +39,8 @@ Configuration Server2025_Baseline {
             Network_access_Do_not_allow_anonymous_enumeration_of_SAM_accounts_and_shares = 'Enabled'
             Network_access_Restrict_anonymous_access_to_Named_Pipes_and_Shares = 'Enabled'
             
-            # REMOVED: Network_access_Restrict_clients_allowed_to_make_remote_calls_to_SAM
-            # We set this via GPRegistryPolicy below to avoid the MOF Schema crash.
+            # NOTE: 'Restrict_clients_allowed_to_make_remote_calls_to_SAM' is removed from here 
+            # and handled via Registry below to prevent DSC Schema crashes.
 
             # Network Security
             Network_security_LAN_Manager_authentication_level = 'Send NTLMv2 responses only. Refuse LM & NTLM'
@@ -78,11 +72,10 @@ Configuration Server2025_Baseline {
         }
 
         ############################################################
-        # 1.1 WORKAROUND: Restrict Remote SAM (Registry Method)
+        # 1.1 Restrict Remote SAM (Registry Method)
         ############################################################
         
-        # This replaces the failing line in SecurityOption
-        GPRegistryPolicy RestrictRemoteSam {
+        RegistryPolicyFile RestrictRemoteSam {
             Key        = 'SYSTEM\CurrentControlSet\Control\Lsa'
             ValueName  = 'RestrictRemoteSAM'
             ValueType  = 'String'
@@ -91,7 +84,7 @@ Configuration Server2025_Baseline {
         }
 
         ############################################################
-        # 2. FIREWALL
+        # 2. FIREWALL – DOMAIN, PRIVATE, PUBLIC
         ############################################################
 
         FirewallProfile FirewallDomainProfile {
@@ -125,6 +118,7 @@ Configuration Server2025_Baseline {
         # 3. ADVANCED AUDIT POLICY CONFIGURATION
         ############################################################
 
+        # Account Logon
         AuditPolicySubcategory Audit_CredentialValidation_S {
             Name      = 'Credential Validation'
             AuditFlag = 'Success'
@@ -135,6 +129,8 @@ Configuration Server2025_Baseline {
             AuditFlag = 'Failure'
             Ensure    = 'Present'
         }
+
+        # Account Management
         AuditPolicySubcategory Audit_SecurityGroupManagement_S {
             Name      = 'Security Group Management'
             AuditFlag = 'Success'
@@ -150,6 +146,8 @@ Configuration Server2025_Baseline {
             AuditFlag = 'Failure'
             Ensure    = 'Present'
         }
+
+        # Detailed Tracking
         AuditPolicySubcategory Audit_PnPActivity_S {
             Name      = 'Plug and Play Events'
             AuditFlag = 'Success'
@@ -160,6 +158,8 @@ Configuration Server2025_Baseline {
             AuditFlag = 'Success'
             Ensure    = 'Present'
         }
+
+        # Logon / Logoff
         AuditPolicySubcategory Audit_AccountLockout_F {
             Name      = 'Account Lockout'
             AuditFlag = 'Failure'
@@ -195,6 +195,8 @@ Configuration Server2025_Baseline {
             AuditFlag = 'Success'
             Ensure    = 'Present'
         }
+
+        # Object Access
         AuditPolicySubcategory Audit_DetailedFileShare_F {
             Name      = 'Detailed File Share'
             AuditFlag = 'Failure'
@@ -230,6 +232,8 @@ Configuration Server2025_Baseline {
             AuditFlag = 'Failure'
             Ensure    = 'Present'
         }
+
+        # Policy Change
         AuditPolicySubcategory Audit_AuditPolicyChange_S {
             Name      = 'Audit Policy Change'
             AuditFlag = 'Success'
@@ -265,6 +269,8 @@ Configuration Server2025_Baseline {
             AuditFlag = 'Failure'
             Ensure    = 'Present'
         }
+
+        # Privilege Use
         AuditPolicySubcategory Audit_SensitivePrivilegeUse_S {
             Name      = 'Sensitive Privilege Use'
             AuditFlag = 'Success'
@@ -275,6 +281,8 @@ Configuration Server2025_Baseline {
             AuditFlag = 'Failure'
             Ensure    = 'Present'
         }
+
+        # System
         AuditPolicySubcategory Audit_OtherSystemEvents_S {
             Name      = 'Other System Events'
             AuditFlag = 'Success'
@@ -310,7 +318,8 @@ Configuration Server2025_Baseline {
         # 4. EVENT LOG SIZE
         ############################################################
 
-        GPRegistryPolicy EventLog_ApplicationSize {
+        # Application log size 32768 KB
+        RegistryPolicyFile EventLog_ApplicationSize {
             Key        = 'SYSTEM\CurrentControlSet\Services\EventLog\Application'
             ValueName  = 'MaxSize'
             ValueType  = 'Dword'
@@ -318,7 +327,8 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        GPRegistryPolicy EventLog_SecuritySize {
+        # Security log size 196608 KB
+        RegistryPolicyFile EventLog_SecuritySize {
             Key        = 'SYSTEM\CurrentControlSet\Services\EventLog\Security'
             ValueName  = 'MaxSize'
             ValueType  = 'Dword'
@@ -326,7 +336,8 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        GPRegistryPolicy EventLog_SystemSize {
+        # System log size 32768 KB
+        RegistryPolicyFile EventLog_SystemSize {
             Key        = 'SYSTEM\CurrentControlSet\Services\EventLog\System'
             ValueName  = 'MaxSize'
             ValueType  = 'Dword'
@@ -339,7 +350,7 @@ Configuration Server2025_Baseline {
         ############################################################
 
         # Machine inactivity limit = 900 seconds
-        GPRegistryPolicy MachineInactivityLimit {
+        RegistryPolicyFile MachineInactivityLimit {
             Key        = 'Software\Microsoft\Windows\CurrentVersion\Policies\System'
             ValueName  = 'InactivityTimeoutSecs'
             ValueType  = 'Dword'
@@ -348,7 +359,7 @@ Configuration Server2025_Baseline {
         }
 
         # Microsoft network server: Digitally sign communications (always) = Enabled
-        GPRegistryPolicy MicrosoftNetworkServerSign {
+        RegistryPolicyFile MicrosoftNetworkServerSign {
             Key        = 'System\CurrentControlSet\Services\LanmanServer\Parameters'
             ValueName  = 'RequireSecuritySignature'
             ValueType  = 'Dword'
@@ -357,7 +368,7 @@ Configuration Server2025_Baseline {
         }
 
         # Control Panel / Personalization – Prevent lock screen camera
-        GPRegistryPolicy NoLockScreenCamera {
+        RegistryPolicyFile NoLockScreenCamera {
             Key        = 'Software\Policies\Microsoft\Windows\Personalization'
             ValueName  = 'NoLockScreenCamera'
             ValueType  = 'Dword'
@@ -366,7 +377,7 @@ Configuration Server2025_Baseline {
         }
 
         # Prevent lock screen slideshow
-        GPRegistryPolicy NoLockScreenSlideshow {
+        RegistryPolicyFile NoLockScreenSlideshow {
             Key        = 'Software\Policies\Microsoft\Windows\Personalization'
             ValueName  = 'NoLockScreenSlideshow'
             ValueType  = 'Dword'
@@ -375,7 +386,7 @@ Configuration Server2025_Baseline {
         }
 
         # Apply UAC restrictions to local accounts on network logons
-        GPRegistryPolicy LocalAccountTokenFilterPolicy {
+        RegistryPolicyFile LocalAccountTokenFilterPolicy {
             Key        = 'System\CurrentControlSet\Control\Lsa'
             ValueName  = 'LocalAccountTokenFilterPolicy'
             ValueType  = 'Dword'
@@ -384,14 +395,14 @@ Configuration Server2025_Baseline {
         }
 
         # SMBv1 client / server disabled
-        GPRegistryPolicy DisableSmb1Server {
+        RegistryPolicyFile DisableSmb1Server {
             Key        = 'SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
             ValueName  = 'SMB1'
             ValueType  = 'Dword'
             ValueData  = 0
             TargetType = 'ComputerConfiguration'
         }
-        GPRegistryPolicy DisableSmb1Client {
+        RegistryPolicyFile DisableSmb1Client {
             Key        = 'SYSTEM\CurrentControlSet\Services\mrxsmb10'
             ValueName  = 'Start'
             ValueType  = 'Dword'
@@ -400,7 +411,7 @@ Configuration Server2025_Baseline {
         }
 
         # NetBT NodeType = P-node
-        GPRegistryPolicy NetBT_NodeType_P {
+        RegistryPolicyFile NetBT_NodeType_P {
             Key        = 'SYSTEM\CurrentControlSet\Services\NetBT\Parameters'
             ValueName  = 'NodeType'
             ValueType  = 'Dword'
@@ -409,14 +420,14 @@ Configuration Server2025_Baseline {
         }
 
         # MSS: Disable IP source routing IPv4/IPv6
-        GPRegistryPolicy DisableIPv4SourceRouting {
+        RegistryPolicyFile DisableIPv4SourceRouting {
             Key        = 'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
             ValueName  = 'DisableIPSourceRouting'
             ValueType  = 'Dword'
             ValueData  = 2
             TargetType = 'ComputerConfiguration'
         }
-        GPRegistryPolicy DisableIPv6SourceRouting {
+        RegistryPolicyFile DisableIPv6SourceRouting {
             Key        = 'SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
             ValueName  = 'DisableIPSourceRouting'
             ValueType  = 'Dword'
@@ -425,7 +436,7 @@ Configuration Server2025_Baseline {
         }
 
         # MSS: Allow ICMP redirects to override OSPF generated routes = Disabled
-        GPRegistryPolicy DisableIcmpRedirects {
+        RegistryPolicyFile DisableIcmpRedirects {
             Key        = 'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
             ValueName  = 'EnableICMPRedirect'
             ValueType  = 'Dword'
@@ -434,7 +445,7 @@ Configuration Server2025_Baseline {
         }
 
         # MSS: NoNameReleaseOnDemand
-        GPRegistryPolicy NoNameReleaseOnDemand {
+        RegistryPolicyFile NoNameReleaseOnDemand {
             Key        = 'SYSTEM\CurrentControlSet\Services\NetBT\Parameters'
             ValueName  = 'NoNameReleaseOnDemand'
             ValueType  = 'Dword'
@@ -443,7 +454,7 @@ Configuration Server2025_Baseline {
         }
 
         # Turn off multicast name resolution
-        GPRegistryPolicy DisableLLMNR {
+        RegistryPolicyFile DisableLLMNR {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
             ValueName  = 'EnableMulticast'
             ValueType  = 'Dword'
@@ -452,7 +463,7 @@ Configuration Server2025_Baseline {
         }
 
         # Windows Defender Firewall: Allow logging + Prohibit notifications
-        GPRegistryPolicy Wdfw_ProhibitNotifications {
+        RegistryPolicyFile Wdfw_ProhibitNotifications {
             Key        = 'SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\DomainProfile'
             ValueName  = 'DisableNotifications'
             ValueType  = 'Dword'
@@ -460,15 +471,15 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Hardened UNC Paths
-        GPRegistryPolicy HardenedUNC_SYSVOL {
+        # Hardened UNC Paths (SYSVOL & NETLOGON)
+        RegistryPolicyFile HardenedUNC_SYSVOL {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths'
             ValueName  = '\\*\SYSVOL'
             ValueType  = 'String'
             ValueData  = 'RequireMutualAuthentication=1,RequireIntegrity=1'
             TargetType = 'ComputerConfiguration'
         }
-        GPRegistryPolicy HardenedUNC_NETLOGON {
+        RegistryPolicyFile HardenedUNC_NETLOGON {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths'
             ValueName  = '\\*\NETLOGON'
             ValueType  = 'String'
@@ -476,8 +487,8 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Audit Process Creation – include command line
-        GPRegistryPolicy IncludeCommandLineInProcessCreation {
+        # System / Audit Process Creation – include command line
+        RegistryPolicyFile IncludeCommandLineInProcessCreation {
             Key        = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
             ValueName  = 'ProcessCreationIncludeCmdLine_Enabled'
             ValueType  = 'Dword'
@@ -485,8 +496,8 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Encryption Oracle Remediation
-        GPRegistryPolicy EncryptionOracleRemediation {
+        # Credentials Delegation – Encryption Oracle Remediation = Force Updated Clients
+        RegistryPolicyFile EncryptionOracleRemediation {
             Key        = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters'
             ValueName  = 'AllowEncryptionOracle'
             ValueType  = 'Dword'
@@ -494,8 +505,8 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Early Launch Antimalware
-        GPRegistryPolicy Elam_BootStartPolicy {
+        # Early Launch Antimalware – Good, unknown and bad but critical
+        RegistryPolicyFile Elam_BootStartPolicy {
             Key        = 'SYSTEM\CurrentControlSet\Policies\EarlyLaunch'
             ValueName  = 'DriverLoadPolicy'
             ValueType  = 'Dword'
@@ -503,8 +514,8 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # LSA protection (Run as PPL)
-        GPRegistryPolicy Lsa_RunAsPPL {
+        # LSA protection (Run as PPL, with UEFI lock)
+        RegistryPolicyFile Lsa_RunAsPPL {
             Key        = 'SYSTEM\CurrentControlSet\Control\Lsa'
             ValueName  = 'RunAsPPL'
             ValueType  = 'Dword'
@@ -513,7 +524,7 @@ Configuration Server2025_Baseline {
         }
 
         # Logon: Enumerate local users on domain-joined computers = Disabled
-        GPRegistryPolicy DontEnumerateLocalUsers {
+        RegistryPolicyFile DontEnumerateLocalUsers {
             Key        = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
             ValueName  = 'DontEnumerateLocalUsers'
             ValueType  = 'Dword'
@@ -522,7 +533,7 @@ Configuration Server2025_Baseline {
         }
 
         # RPC: Restrict unauthenticated RPC clients
-        GPRegistryPolicy RpcRestrictRemoteClients {
+        RegistryPolicyFile RpcRestrictRemoteClients {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows NT\Rpc'
             ValueName  = 'RestrictRemoteClients'
             ValueType  = 'Dword'
@@ -531,7 +542,7 @@ Configuration Server2025_Baseline {
         }
 
         # AutoPlay policies – Turn off AutoPlay on all drives
-        GPRegistryPolicy TurnOffAutoPlay {
+        RegistryPolicyFile TurnOffAutoPlay {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\Explorer'
             ValueName  = 'NoDriveTypeAutoRun'
             ValueType  = 'Dword'
@@ -540,7 +551,7 @@ Configuration Server2025_Baseline {
         }
 
         # Disallow Autoplay for non-volume devices
-        GPRegistryPolicy DisallowAutoplayNonVolume {
+        RegistryPolicyFile DisallowAutoplayNonVolume {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\Explorer'
             ValueName  = 'NoAutoplayfornonVolume'
             ValueType  = 'Dword'
@@ -549,14 +560,14 @@ Configuration Server2025_Baseline {
         }
 
         # Windows Defender SmartScreen – Explorer: Warn and prevent bypass
-        GPRegistryPolicy SmartScreen_Explorer_Enable {
+        RegistryPolicyFile SmartScreen_Explorer_Enable {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\System'
             ValueName  = 'EnableSmartScreen'
             ValueType  = 'Dword'
             ValueData  = 1
             TargetType = 'ComputerConfiguration'
         }
-        GPRegistryPolicy SmartScreen_Explorer_Block {
+        RegistryPolicyFile SmartScreen_Explorer_Block {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\System'
             ValueName  = 'ShellSmartScreenLevel'
             ValueType  = 'String'
@@ -565,7 +576,7 @@ Configuration Server2025_Baseline {
         }
 
         # Windows Search – Allow indexing of encrypted files = Disabled
-        GPRegistryPolicy Search_IndexEncryptedFiles {
+        RegistryPolicyFile Search_IndexEncryptedFiles {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\Windows Search'
             ValueName  = 'AllowIndexingEncryptedStoresOrItems'
             ValueType  = 'Dword'
@@ -574,7 +585,7 @@ Configuration Server2025_Baseline {
         }
 
         # Windows PowerShell – Script Block Logging
-        GPRegistryPolicy PS_ScriptBlockLogging_Enable {
+        RegistryPolicyFile PS_ScriptBlockLogging_Enable {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
             ValueName  = 'EnableScriptBlockLogging'
             ValueType  = 'Dword'
@@ -582,43 +593,43 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # WinRM Client / Service
-        GPRegistryPolicy WinRMClient_AllowBasic {
+        # WinRM Client / Service – disable Basic, Digest, unencrypted, etc.
+        RegistryPolicyFile WinRMClient_AllowBasic {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\WinRM\Client'
             ValueName  = 'AllowBasic'
             ValueType  = 'Dword'
             ValueData  = 0
             TargetType = 'ComputerConfiguration'
         }
-        GPRegistryPolicy WinRMClient_AllowUnencrypted {
+        RegistryPolicyFile WinRMClient_AllowUnencrypted {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\WinRM\Client'
             ValueName  = 'AllowUnencryptedTraffic'
             ValueType  = 'Dword'
             ValueData  = 0
             TargetType = 'ComputerConfiguration'
         }
-        GPRegistryPolicy WinRMClient_DisallowDigest {
+        RegistryPolicyFile WinRMClient_DisallowDigest {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\WinRM\Client'
             ValueName  = 'AllowDigest'
             ValueType  = 'Dword'
             ValueData  = 0
             TargetType = 'ComputerConfiguration'
         }
-        GPRegistryPolicy WinRMService_AllowBasic {
+        RegistryPolicyFile WinRMService_AllowBasic {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
             ValueName  = 'AllowBasic'
             ValueType  = 'Dword'
             ValueData  = 0
             TargetType = 'ComputerConfiguration'
         }
-        GPRegistryPolicy WinRMService_AllowUnencrypted {
+        RegistryPolicyFile WinRMService_AllowUnencrypted {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
             ValueName  = 'AllowUnencryptedTraffic'
             ValueType  = 'Dword'
             ValueData  = 0
             TargetType = 'ComputerConfiguration'
         }
-        GPRegistryPolicy WinRMService_DisallowRunAs {
+        RegistryPolicyFile WinRMService_DisallowRunAs {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
             ValueName  = 'DisableRunAs'
             ValueType  = 'Dword'
@@ -626,29 +637,29 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Remote Desktop Services
-        GPRegistryPolicy Rds_DisableDriveRedirection {
+        # Remote Desktop Services – drive redirection, security, etc.
+        RegistryPolicyFile Rds_DisableDriveRedirection {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
             ValueName  = 'fDisableCdm'
             ValueType  = 'Dword'
             ValueData  = 1
             TargetType = 'ComputerConfiguration'
         }
-        GPRegistryPolicy Rds_AlwaysPromptForPassword {
+        RegistryPolicyFile Rds_AlwaysPromptForPassword {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
             ValueName  = 'fPromptForPassword'
             ValueType  = 'Dword'
             ValueData  = 1
             TargetType = 'ComputerConfiguration'
         }
-        GPRegistryPolicy Rds_RequireSecureRPC {
+        RegistryPolicyFile Rds_RequireSecureRPC {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
             ValueName  = 'fEncryptRPCTraffic'
             ValueType  = 'Dword'
             ValueData  = 1
             TargetType = 'ComputerConfiguration'
         }
-        GPRegistryPolicy Rds_EncryptionLevel_High {
+        RegistryPolicyFile Rds_EncryptionLevel_High {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
             ValueName  = 'MinEncryptionLevel'
             ValueType  = 'Dword'
@@ -657,7 +668,7 @@ Configuration Server2025_Baseline {
         }
 
         # RSS Feeds – prevent enclosures
-        GPRegistryPolicy Rss_PreventEnclosures {
+        RegistryPolicyFile Rss_PreventEnclosures {
             Key        = 'SOFTWARE\Policies\Microsoft\Internet Explorer\Feeds'
             ValueName  = 'DisableEnclosureDownload'
             ValueType  = 'Dword'
@@ -665,20 +676,21 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Windows Installer
-        GPRegistryPolicy Installer_AllowUserControl {
+        # Windows Installer – disable user control and elevated installs
+        RegistryPolicyFile Installer_AllowUserControl {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\Installer'
             ValueName  = 'EnableUserControl'
             ValueType  = 'Dword'
             ValueData  = 0
             TargetType = 'ComputerConfiguration'
         }
-        GPRegistryPolicy Installer_AlwaysInstallElevated {
+        RegistryPolicyFile Installer_AlwaysInstallElevated {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\Installer'
             ValueName  = 'AlwaysInstallElevated'
             ValueType  = 'Dword'
             ValueData  = 0
             TargetType = 'ComputerConfiguration'
         }
-    }
-}
+
+    } # end Node
+} # end Configuration
