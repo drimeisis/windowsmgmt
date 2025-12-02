@@ -68,7 +68,7 @@ Configuration Server2025_Baseline {
         # System objects: strengthen default permissions
         SecurityOption SystemObjects {
             Name = 'SecurityOptions'
-            System_objects_Strengthen_default_permissions_of_internal_system_objects_e_g_Symbolic_Links = 'Enabled'
+            System_objects_Strengthen_default_permissions_of_internal_system_objects_eg_Symbolic_Links = 'Enabled'
         }
 
         # UAC block
