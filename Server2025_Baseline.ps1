@@ -1,13 +1,3 @@
-<# 
-    Server2025_Baseline.ps1
-    DSC baseline for Windows Server 2025 replacing your GPOs.
-    Requires modules:
-      - SecurityPolicyDsc
-      - AuditPolicyDsc
-      - GPRegistryPolicyDsc
-      - NetworkingDsc
-#>
-
 Configuration Server2025_Baseline {
 
     param(
@@ -40,10 +30,8 @@ Configuration Server2025_Baseline {
         # Microsoft network client options
         SecurityOption MicrosoftNetworkClient {
             Name = 'SecurityOptions'
-            Microsoft_network_client_Digitally_sign_communications_always =
-                'Enabled' # Microsoft network client: Digitally sign communications (always)
-            Microsoft_network_client_Send_unencrypted_password_to_third_party_SMB_servers =
-                'Disabled'
+            Microsoft_network_client_Digitally_sign_communications_always = 'Enabled'
+            Microsoft_network_client_Send_unencrypted_password_to_third_party_SMB_servers = 'Disabled'
         }
 
         # Network access restrictions / anonymous access
@@ -61,13 +49,10 @@ Configuration Server2025_Baseline {
         # Network security: LAN Manager / LDAP / NTLM minimum security
         SecurityOption NetworkSecurity {
             Name = 'SecurityOptions'
-            Network_security_LAN_Manager_authentication_level =
-                'Send NTLMv2 responses only. Refuse LM & NTLM'
+            Network_security_LAN_Manager_authentication_level = 'Send NTLMv2 responses only. Refuse LM & NTLM'
             Network_security_LDAP_client_signing_requirements = 'Negotiate signing'
-            Network_security_Minimum_session_security_for_NTLM_SSP_based_including_secure_RPC_clients =
-                'Both options checked'   # Require NTLMv2 session security and 128-bit encryption
-            Network_security_Minimum_session_security_for_NTLM_SSP_based_including_secure_RPC_servers =
-                'Both options checked'
+            Network_security_Minimum_session_security_for_NTLM_SSP_based_including_secure_RPC_clients = 'Both options checked'
+            Network_security_Minimum_session_security_for_NTLM_SSP_based_including_secure_RPC_servers = 'Both options checked'
             Network_security_Allow_LocalSystem_NULL_session_fallback = 'Disabled'
         }
 
@@ -83,30 +68,25 @@ Configuration Server2025_Baseline {
         # System objects: strengthen default permissions
         SecurityOption SystemObjects {
             Name = 'SecurityOptions'
-            System_objects_Strengthen_default_permissions_of_internal_system_objects_e_g_Symbolic_Links =
-                'Enabled'
+            System_objects_Strengthen_default_permissions_of_internal_system_objects_e_g_Symbolic_Links = 'Enabled'
         }
 
-        # UAC block – all your UAC settings
+        # UAC block
         SecurityOption UacSettings {
             Name = 'SecurityOptions'
             User_Account_Control_Admin_Approval_Mode_for_the_Built_in_Administrator_account = 'Enabled'
-            User_Account_Control_Behavior_of_the_elevation_prompt_for_administrators_in_Admin_Approval_Mode =
-                'Prompt for consent on the secure desktop'
-            User_Account_Control_Behavior_of_the_elevation_prompt_for_standard_users =
-                'Automatically deny elevation request'
+            User_Account_Control_Behavior_of_the_elevation_prompt_for_administrators_in_Admin_Approval_Mode = 'Prompt for consent on the secure desktop'
+            User_Account_Control_Behavior_of_the_elevation_prompt_for_standard_users = 'Automatically deny elevation request'
             User_Account_Control_Detect_application_installations_and_prompt_for_elevation = 'Enabled'
-            User_Account_Control_Only_elevate_UIAccess_applications_that_are_installed_in_secure_locations =
-                'Enabled'
+            User_Account_Control_Only_elevate_UIAccess_applications_that_are_installed_in_secure_locations = 'Enabled'
             User_Account_Control_Run_all_administrators_in_Admin_Approval_Mode = 'Enabled'
             User_Account_Control_Virtualize_file_and_registry_write_failures_to_per_user_locations = 'Enabled'
         }
 
-        # Audit: Force audit policy subcategory settings to override category settings = Enabled
+        # Audit: Force audit policy subcategory settings to override category settings
         SecurityOption AuditPolicyOverride {
             Name = 'SecurityOptions'
-            Audit_Force_audit_policy_subcategory_settings_Windows_Vista_or_later_to_override_audit_policy_category_settings =
-                'Enabled'
+            Audit_Force_audit_policy_subcategory_settings_Windows_Vista_or_later_to_override_audit_policy_category_settings = 'Enabled'
         }
 
         # Machine inactivity limit = 900 seconds
@@ -362,7 +342,6 @@ Configuration Server2025_Baseline {
         # 4. EVENT LOG SIZE
         ############################################################
 
-        # Application log size 32768 KB
         GPRegistryPolicy EventLog_ApplicationSize {
             Key        = 'SYSTEM\CurrentControlSet\Services\EventLog\Application'
             ValueName  = 'MaxSize'
@@ -371,7 +350,6 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Security log size 196608 KB
         GPRegistryPolicy EventLog_SecuritySize {
             Key        = 'SYSTEM\CurrentControlSet\Services\EventLog\Security'
             ValueName  = 'MaxSize'
@@ -380,7 +358,6 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # System log size 32768 KB
         GPRegistryPolicy EventLog_SystemSize {
             Key        = 'SYSTEM\CurrentControlSet\Services\EventLog\System'
             ValueName  = 'MaxSize'
@@ -392,10 +369,8 @@ Configuration Server2025_Baseline {
         ############################################################
         # 5. ADMINISTRATIVE TEMPLATES / REGISTRY-BASED POLICIES
         ############################################################
-        # These all use GPRegistryPolicy (from GPRegistryPolicyDsc).
-        # I’ll map representative ones; you can add more using same pattern.
 
-        # Control Panel / Personalization – Prevent lock screen camera
+        # Prevent lock screen camera
         GPRegistryPolicy NoLockScreenCamera {
             Key        = 'Software\Policies\Microsoft\Windows\Personalization'
             ValueName  = 'NoLockScreenCamera'
@@ -418,7 +393,7 @@ Configuration Server2025_Baseline {
             Key        = 'System\CurrentControlSet\Control\Lsa'
             ValueName  = 'LocalAccountTokenFilterPolicy'
             ValueType  = 'Dword'
-            ValueData  = 0  # 0 = apply restrictions
+            ValueData  = 0
             TargetType = 'ComputerConfiguration'
         }
 
@@ -490,10 +465,6 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Lanman Server / Workstation – enforce SMB 3.0 + audit insecure
-        # TODO: confirm exact keys for "Mandate the minimum version of SMB = 3.0.0" in your environment.
-        # Add GPRegistryPolicy blocks here as needed.
-
         # Windows Defender Firewall: Allow logging + Prohibit notifications
         GPRegistryPolicy Wdfw_ProhibitNotifications {
             Key        = 'SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\DomainProfile'
@@ -503,7 +474,7 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Hardened UNC Paths (SYSVOL & NETLOGON)
+        # Hardened UNC Paths
         GPRegistryPolicy HardenedUNC_SYSVOL {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths'
             ValueName  = '\\*\SYSVOL'
@@ -519,11 +490,7 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Printers – configure RPC listener etc.
-        # TODO: add specific registry keys for "Configure RPC listener settings" and
-        # "Limits print driver installation to Administrators" based on your ADMX mapping.
-
-        # System / Audit Process Creation – include command line
+        # Audit Process Creation – include command line
         GPRegistryPolicy IncludeCommandLineInProcessCreation {
             Key        = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
             ValueName  = 'ProcessCreationIncludeCmdLine_Enabled'
@@ -532,7 +499,7 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Credentials Delegation – Encryption Oracle Remediation = Force Updated Clients
+        # Encryption Oracle Remediation = Force Updated Clients
         GPRegistryPolicy EncryptionOracleRemediation {
             Key        = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters'
             ValueName  = 'AllowEncryptionOracle'
@@ -541,16 +508,16 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Early Launch Antimalware – Good, unknown and bad but critical
+        # Early Launch Antimalware
         GPRegistryPolicy Elam_BootStartPolicy {
             Key        = 'SYSTEM\CurrentControlSet\Policies\EarlyLaunch'
             ValueName  = 'DriverLoadPolicy'
             ValueType  = 'Dword'
-            ValueData  = 3  # Good + Unknown + Bad but critical
+            ValueData  = 3
             TargetType = 'ComputerConfiguration'
         }
 
-        # LSA protection (Run as PPL, with UEFI lock)
+        # LSA protection (Run as PPL)
         GPRegistryPolicy Lsa_RunAsPPL {
             Key        = 'SYSTEM\CurrentControlSet\Control\Lsa'
             ValueName  = 'RunAsPPL'
@@ -573,7 +540,7 @@ Configuration Server2025_Baseline {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows NT\Rpc'
             ValueName  = 'RestrictRemoteClients'
             ValueType  = 'Dword'
-            ValueData  = 1  # Authenticated
+            ValueData  = 1
             TargetType = 'ComputerConfiguration'
         }
 
@@ -629,7 +596,7 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # WinRM Client / Service – disable Basic, Digest, unencrypted, etc.
+        # WinRM Client / Service
         GPRegistryPolicy WinRMClient_AllowBasic {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\WinRM\Client'
             ValueName  = 'AllowBasic'
@@ -673,9 +640,7 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Event Log Service sizes already set above – this covers the ADMX parts too.
-
-        # Remote Desktop Services – drive redirection, security, etc.
+        # Remote Desktop Services
         GPRegistryPolicy Rds_DisableDriveRedirection {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
             ValueName  = 'fDisableCdm'
@@ -714,10 +679,7 @@ Configuration Server2025_Baseline {
             TargetType = 'ComputerConfiguration'
         }
 
-        # Windows Logon Options – Sign-in and lock last user automatically after restart = Disabled
-        # TODO: confirm the exact registry entry for this option for Server 2025 if required.
-
-        # Windows Installer – disable user control and elevated installs
+        # Windows Installer
         GPRegistryPolicy Installer_AllowUserControl {
             Key        = 'SOFTWARE\Policies\Microsoft\Windows\Installer'
             ValueName  = 'EnableUserControl'
@@ -732,14 +694,5 @@ Configuration Server2025_Baseline {
             ValueData  = 0
             TargetType = 'ComputerConfiguration'
         }
-
-        # Windows Components / Biometrics / Facial Features – enhanced anti-spoofing
-        # TODO: add registry key based on your ADMX version if using Hello for Business on servers.
-
-        # Kernel DMA Protection, Remote host delegation of non-exportable credentials,
-        # “Allow Custom SSPs and APs” etc. also map to registry keys under
-        # HKLM\SYSTEM\CurrentControlSet\Control\Lsa and device-specific keys.
-        # Add GPRegistryPolicy entries for each as required using this same pattern.
-
-    } # end Node
-} # end Configuration
+    }
+}
