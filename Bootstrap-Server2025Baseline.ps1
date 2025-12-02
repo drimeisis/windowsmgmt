@@ -1,11 +1,33 @@
 # Bootstrap-Server2025Baseline.ps1
-
 param(
     [string]$ConfigUrl = "https://raw.githubusercontent.com/drimeisis/windowsmgmt/refs/heads/main/Server2025_Baseline.ps1",
     [string]$WorkDir   = "C:\DSC"
 )
 
-# --- 1. Ensure DSC modules are installed ------------------------------------
+$ErrorActionPreference = 'Stop'
+
+# Ensure TLS 1.2 for downloads
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# --- 1. Ensure NuGet provider and PSGallery trust (no prompts) -------------
+
+# Install NuGet provider silently
+$nuget = Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue
+if (-not $nuget) {
+    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Confirm:$false -Scope AllUsers
+}
+
+# Ensure PSGallery exists and is trusted
+$psGallery = Get-PSRepository -Name 'PSGallery' -ErrorAction SilentlyContinue
+if (-not $psGallery) {
+    Register-PSRepository -Name 'PSGallery' `
+        -SourceLocation 'https://www.powershellgallery.com/api/v2' `
+        -InstallationPolicy Trusted
+} elseif ($psGallery.InstallationPolicy -ne 'Trusted') {
+    Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted
+}
+
+# --- 2. Ensure DSC modules are installed (no prompts) ----------------------
 
 $modules = @(
     "SecurityPolicyDsc",
@@ -14,64 +36,45 @@ $modules = @(
     "NetworkingDsc"
 )
 
-# Make sure PowerShellGet/PSGallery are usable
-if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
-    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
-}
-
-Set-PSRepository -Name "PSGallery" -InstallationPolicy Trusted -ErrorAction SilentlyContinue
-
 function Ensure-Module {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Name
-    )
+    param([string]$Name)
 
     if (-not (Get-Module -ListAvailable -Name $Name -ErrorAction SilentlyContinue)) {
-        Write-Host "Installing module $Name ..."
-        Install-Module -Name $Name -Repository PSGallery -Force -Scope AllUsers
-    }
-    else {
-        Write-Host "Module $Name already installed."
+        Install-Module -Name $Name -Repository PSGallery -Force -Confirm:$false -Scope AllUsers
     }
 }
 
-foreach ($m in $modules) {
-    Ensure-Module -Name $m
-}
+foreach ($m in $modules) { Ensure-Module -Name $m }
 
-# --- 2. Prepare working folder ----------------------------------------------
+# --- 3. Prepare working folder ---------------------------------------------
 
 New-Item -Path $WorkDir -ItemType Directory -Force | Out-Null
 Set-Location $WorkDir
 
-# --- 3. Download DSC configuration -----------------------------------------
+# --- 4. Download DSC configuration ----------------------------------------
 
 $ConfigPath = Join-Path $WorkDir "Server2025_Baseline.ps1"
-
-Write-Host "Downloading DSC configuration from $ConfigUrl ..."
 Invoke-WebRequest -Uri $ConfigUrl -OutFile $ConfigPath -UseBasicParsing
 
-# --- 4. Compile DSC configuration ------------------------------------------
+# --- 5. Compile DSC configuration -----------------------------------------
 
-. $ConfigPath    # dot-source the configuration
+. $ConfigPath
 
 $MofOutput = Join-Path $WorkDir "Compiled"
 New-Item -Path $MofOutput -ItemType Directory -Force | Out-Null
 
-Write-Host "Compiling DSC configuration ..."
 Server2025_Baseline -NodeName 'localhost' -OutputPath $MofOutput
 
-# --- 5. Configure LCM for drift correction ---------------------------------
+# --- 6. Configure LCM for ApplyAndAutoCorrect ------------------------------
 
 [DSCLocalConfigurationManager()]
 configuration LCMConfig {
     Node 'localhost' {
         Settings {
-            RefreshMode                  = 'Disabled'          # push mode
-            ConfigurationMode            = 'ApplyAndAutoCorrect'
-            ConfigurationModeFrequencyMins = 30                # how often to re-check
-            RebootNodeIfNeeded           = $true
+            RefreshMode                    = 'Disabled'          # push mode
+            ConfigurationMode              = 'ApplyAndAutoCorrect'
+            ConfigurationModeFrequencyMins = 30
+            RebootNodeIfNeeded             = $true
         }
     }
 }
@@ -79,13 +82,9 @@ configuration LCMConfig {
 $LcmPath = Join-Path $WorkDir "LCM"
 New-Item -Path $LcmPath -ItemType Directory -Force | Out-Null
 
-Write-Host "Configuring LCM ..."
 LCMConfig -OutputPath $LcmPath
 Set-DscLocalConfigurationManager -Path $LcmPath -Verbose
 
-# --- 6. Apply configuration -------------------------------------------------
+# --- 7. Apply DSC configuration -------------------------------------------
 
-Write-Host "Applying DSC configuration ..."
 Start-DscConfiguration -Path $MofOutput -Force -Verbose -Wait
-
-Write-Host "Baseline applied and LCM set to ApplyAndAutoCorrect."
