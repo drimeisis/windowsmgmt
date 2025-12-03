@@ -1,9 +1,9 @@
 # Build-ManualPackage.ps1
 
 # 1. Compiles MOF in isolation.
-# 2. GENERATES Metadata (guestconfiguration.json).
+# 2. Generates Metadata.
 # 3. Zips manually.
-# 4. Creates Policy (With explicit PolicyId).
+# 4. Creates Policy using Splatting (No backticks to break).
 
 param(
     [string]$ResourceGroupName    = "demo-rg-arc-gcp",
@@ -58,16 +58,14 @@ foreach ($m in $Modules) {
 Write-Host "`n--- PHASE 3: Compiling MOF ---" -ForegroundColor Cyan
 
 $CompilerScript = Join-Path $WorkDir "Worker_Compile.ps1"
+# Note: We keep this on one line in the variable to avoid here-string issues
 $CompilerCode = @"
     `$ErrorActionPreference = 'Stop'
     `$env:PSModulePath = "$ModuleDir;C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
-    
     Write-Host "   [Compiler] Compiling..."
     . "$ConfigFilePath"
     Server2025_Baseline -NodeName 'localhost' -OutputPath "$MofDir"
-    
     `$Old = Join-Path "$MofDir" "localhost.mof"
-    `$New = Join-Path "$MofDir" "Server2025_Baseline.mof"
     Rename-Item -Path `$Old -NewName "Server2025_Baseline.mof" -Force
 "@
 Set-Content -Path $CompilerScript -Value $CompilerCode
@@ -90,16 +88,12 @@ foreach ($m in $Modules) {
     Copy-Item "$ModuleDir\$m" -Destination $StagingModules -Recurse
 }
 
-# 3. GENERATE METADATA (guestconfiguration.json)
+# 3. GENERATE METADATA
 Write-Host "   [Metadata] Generating guestconfiguration.json..."
-
 $ModuleList = @()
 foreach ($m in $Modules) {
-    # Get version from the folder name
     $VersionDir = Get-ChildItem "$ModuleDir\$m" | Select-Object -First 1
-    if ($VersionDir) {
-        $ModuleList += @{ name = $m; version = $VersionDir.Name }
-    }
+    if ($VersionDir) { $ModuleList += @{ name = $m; version = $VersionDir.Name } }
 }
 
 $MetaJson = @{
@@ -112,22 +106,25 @@ $MetaJson = @{
     }
     modules = $ModuleList
 } | ConvertTo-Json -Depth 5
-
 Set-Content -Path "$StagingDir\guestconfiguration.json" -Value $MetaJson -Encoding UTF8
 
-# 4. Zip it
+# 4. Zip
 Write-Host "   [Zipping] Creating Server2025_Baseline.zip..."
 $ZipPath = Join-Path $WorkDir "Server2025_Baseline.zip"
 Compress-Archive -Path "$StagingDir\*" -DestinationPath $ZipPath -Force
 
+# 5. Calculate Hash
+$HashObj = Get-FileHash -Path $ZipPath -Algorithm SHA256
+$ContentHash = $HashObj.Hash
+Write-Host "   [Hash] SHA256: $ContentHash" -ForegroundColor Yellow
+
 # --- PHASE 5: UPLOAD & PUBLISH ---------------------------------------------
 Write-Host "`n--- PHASE 5: Upload & Publish ---" -ForegroundColor Cyan
 
-# 1. Get Storage Key
+# 1. Storage Authentication
 Write-Host "Fetching Storage Account Keys..."
 $Keys = Get-AzStorageAccountKey -ResourceGroupName $ResourceGroupName -Name $StorageAccountName
-$StorageKey = $Keys[0].Value
-$StorageCtx = New-AzStorageContext -StorageAccountName $StorageAccountName -StorageAccountKey $StorageKey
+$StorageCtx = New-AzStorageContext -StorageAccountName $StorageAccountName -StorageAccountKey $Keys[0].Value
 
 # 2. Ensure Container
 if (-not (Get-AzStorageContainer -Name $StorageContainerName -Context $StorageCtx -ErrorAction SilentlyContinue)) {
@@ -143,28 +140,34 @@ $StartTime = Get-Date
 $EndTime = $StartTime.AddYears(3)
 $SasToken = New-AzStorageBlobSASToken -Container $StorageContainerName -Blob "Server2025_Baseline.zip" -Permission r -Context $StorageCtx -StartTime $StartTime -ExpiryTime $EndTime -FullUri
 
-# 5. Create Policy Definition
+# 5. Create Policy Definition using SPLATTING (Fixes the Prompt Issue)
 Write-Host "Creating Azure Policy Definition..."
 $PolicyDir = Join-Path $WorkDir "Policy"
 New-Item $PolicyDir -ItemType Directory -Force | Out-Null
 
-# Generate a consistent GUID for the policy ID to satisfy the prompt
-$PolicyId = (New-Guid).ToString()
-
-# We use the clean module path for this step
 $env:PSModulePath = "$ModuleDir;C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
 Import-Module GuestConfiguration -Force
 
-# FIX: Added -PolicyId parameter
-New-GuestConfigurationPolicy `
-    -ContentUri $SasToken `
-    -DisplayName $PolicyName `
-    -Description "Enforces Server 2025 Baseline via Machine Configuration" `
-    -Path $PolicyDir `
-    -Platform Windows `
-    -Mode ApplyAndAutoCorrect `
-    -PolicyId $PolicyId `
-    -Verbose
+# We use a Hashtable for parameters. This cannot break via copy-paste.
+$PolicyParams = @{
+    ContentUri      = $SasToken
+    DisplayName     = $PolicyName
+    Description     = "Enforces Server 2025 Baseline via Machine Configuration"
+    Path            = $PolicyDir
+    Platform        = "Windows"
+    Mode            = "ApplyAndAutoCorrect"
+    PolicyId        = (New-Guid).ToString() # Random GUID to satisfy mandatory param
+    Verbose         = $true
+}
+
+# We dynamically add ContentHash if your module supports it, otherwise we skip it
+# This handles the version difference gracefully
+if (Get-Help New-GuestConfigurationPolicy -Parameter ContentHash -ErrorAction SilentlyContinue) {
+    $PolicyParams['ContentHash'] = $ContentHash
+}
+
+# Execute with Splatting
+New-GuestConfigurationPolicy @PolicyParams
 
 # Restore Module Path
 $env:PSModulePath = [Environment]::GetEnvironmentVariable("PSModulePath", "Machine")
