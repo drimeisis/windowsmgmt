@@ -1,8 +1,9 @@
 # Build-ManualPackage.ps1
 
 # 1. Compiles MOF in isolation.
-# 2. MANUALLY constructs the Azure Guest Configuration Zip structure.
-# 3. Uploads using explicit Storage Key authentication.
+# 2. GENERATES Metadata (guestconfiguration.json).
+# 3. Zips manually.
+# 4. Creates Policy (allowing cmdlet to calculate hash from URL).
 
 param(
     [string]$ResourceGroupName    = "demo-rg-arc-gcp",
@@ -46,6 +47,7 @@ New-Item $StagingDir -ItemType Directory -Force | Out-Null
 
 # Download required modules
 $Modules = @("SecurityPolicyDsc", "AuditPolicyDsc", "GPRegistryPolicyDsc", "NetworkingDsc")
+# Also need GuestConfig for the Policy step
 Save-Module -Name "GuestConfiguration" -Path $ModuleDir -Force -ErrorAction Stop
 
 foreach ($m in $Modules) {
@@ -89,54 +91,71 @@ foreach ($m in $Modules) {
     Copy-Item "$ModuleDir\$m" -Destination $StagingModules -Recurse
 }
 
-# 3. Zip it
+# 3. GENERATE METADATA (guestconfiguration.json) - CRITICAL FIX
+Write-Host "   [Metadata] Generating guestconfiguration.json..."
+
+$ModuleList = @()
+foreach ($m in $Modules) {
+    # Get version from the folder name we just downloaded
+    $VersionDir = Get-ChildItem "$ModuleDir\$m" | Select-Object -First 1
+    if ($VersionDir) {
+        $ModuleList += @{ name = $m; version = $VersionDir.Name }
+    }
+}
+
+$MetaJson = @{
+    version = "1.0.0"
+    configurationSetting = @{
+        configuration = @{
+            name = "Server2025_Baseline"
+            mofFileName = "Server2025_Baseline.mof"
+        }
+    }
+    modules = $ModuleList
+} | ConvertTo-Json -Depth 5
+
+Set-Content -Path "$StagingDir\guestconfiguration.json" -Value $MetaJson -Encoding UTF8
+
+# 4. Zip it
 Write-Host "   [Zipping] Creating Server2025_Baseline.zip..."
 $ZipPath = Join-Path $WorkDir "Server2025_Baseline.zip"
 Compress-Archive -Path "$StagingDir\*" -DestinationPath $ZipPath -Force
 
-# 4. Calculate Hash
-$HashObj = Get-FileHash -Path $ZipPath -Algorithm SHA256
-$ContentHash = $HashObj.Hash
-Write-Host "   [Hash] SHA256: $ContentHash" -ForegroundColor Yellow
-
 # --- PHASE 5: UPLOAD & PUBLISH ---------------------------------------------
 Write-Host "`n--- PHASE 5: Upload & Publish ---" -ForegroundColor Cyan
 
-# 1. Get Storage Key (The Robust Method)
+# 1. Get Storage Key
 Write-Host "Fetching Storage Account Keys..."
 $Keys = Get-AzStorageAccountKey -ResourceGroupName $ResourceGroupName -Name $StorageAccountName
 $StorageKey = $Keys[0].Value
-
-# 2. Create Storage Context
-Write-Host "Creating Storage Context..."
 $StorageCtx = New-AzStorageContext -StorageAccountName $StorageAccountName -StorageAccountKey $StorageKey
 
-# 3. Ensure Container
+# 2. Ensure Container
 if (-not (Get-AzStorageContainer -Name $StorageContainerName -Context $StorageCtx -ErrorAction SilentlyContinue)) {
     New-AzStorageContainer -Name $StorageContainerName -Context $StorageCtx -Permission Blob
 }
 
-# 4. Upload
+# 3. Upload
 Write-Host "Uploading to Blob Storage..."
 Set-AzStorageBlobContent -File $ZipPath -Container $StorageContainerName -Blob "Server2025_Baseline.zip" -Context $StorageCtx -Force | Out-Null
 
-# 5. SAS Token
+# 4. SAS Token
 $StartTime = Get-Date
 $EndTime = $StartTime.AddYears(3)
 $SasToken = New-AzStorageBlobSASToken -Container $StorageContainerName -Blob "Server2025_Baseline.zip" -Permission r -Context $StorageCtx -StartTime $StartTime -ExpiryTime $EndTime -FullUri
 
-# 6. Create Policy Definition
+# 5. Create Policy Definition
 Write-Host "Creating Azure Policy Definition..."
 $PolicyDir = Join-Path $WorkDir "Policy"
 New-Item $PolicyDir -ItemType Directory -Force | Out-Null
 
-# Temporarily isolate environment for Policy Generator to avoid conflicts
+# We use the clean module path for this step to ensure New-GuestConfigurationPolicy loads
 $env:PSModulePath = "$ModuleDir;C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
 Import-Module GuestConfiguration -Force
 
+# FIX: Removed -ContentHash. The cmdlet will download the package from the Uri to calculate it.
 New-GuestConfigurationPolicy `
     -ContentUri $SasToken `
-    -ContentHash $ContentHash `
     -DisplayName $PolicyName `
     -Description "Enforces Server 2025 Baseline via Machine Configuration" `
     -Path $PolicyDir `
@@ -147,13 +166,13 @@ New-GuestConfigurationPolicy `
 # Restore Module Path
 $env:PSModulePath = [Environment]::GetEnvironmentVariable("PSModulePath", "Machine")
 
-# 7. Publish
+# 6. Publish
 $PolicyJson = Get-ChildItem "$PolicyDir\*.json" | Select-Object -First 1
 Write-Host "Publishing Policy JSON: $($PolicyJson.Name)..."
 Publish-GuestConfigurationPolicy -Path $PolicyJson.FullName -Verbose
 
 Write-Host "`n----------------------------------------------------------------"
-Write-Host "SUCCESS! Policy '$PolicyName' created successfully." -ForegroundColor Green
+Write-Host "SUCCESS! Policy '$PolicyName' created." -ForegroundColor Green
 Write-Host "1. Go to Azure Portal > Policy > Definitions."
 Write-Host "2. Assign '$PolicyName' to your Arc Servers."
 Write-Host "----------------------------------------------------------------"
