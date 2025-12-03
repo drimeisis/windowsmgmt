@@ -2,7 +2,7 @@
 
 # 1. Compiles MOF in isolation.
 # 2. MANUALLY constructs the Azure Guest Configuration Zip structure.
-# 3. Uploads (using correct Storage Context) and creates Policy.
+# 3. Uploads using explicit Storage Key authentication.
 
 param(
     [string]$ResourceGroupName    = "demo-rg-arc-gcp",
@@ -44,10 +44,8 @@ New-Item $ModuleDir -ItemType Directory -Force | Out-Null
 New-Item $MofDir -ItemType Directory -Force | Out-Null
 New-Item $StagingDir -ItemType Directory -Force | Out-Null
 
-# Download required modules 
+# Download required modules
 $Modules = @("SecurityPolicyDsc", "AuditPolicyDsc", "GPRegistryPolicyDsc", "NetworkingDsc")
-
-# Also need GuestConfig for the Policy step later
 Save-Module -Name "GuestConfiguration" -Path $ModuleDir -Force -ErrorAction Stop
 
 foreach ($m in $Modules) {
@@ -104,35 +102,35 @@ Write-Host "   [Hash] SHA256: $ContentHash" -ForegroundColor Yellow
 # --- PHASE 5: UPLOAD & PUBLISH ---------------------------------------------
 Write-Host "`n--- PHASE 5: Upload & Publish ---" -ForegroundColor Cyan
 
-# FIX: Get the STORAGE Context (Keys), not just the Login Context
+# 1. Get Storage Key (The Robust Method)
 Write-Host "Fetching Storage Account Keys..."
-$StorageAcct = Get-AzStorageAccount -ResourceGroupName $ResourceGroupName -Name $StorageAccountName -ErrorAction SilentlyContinue
+$Keys = Get-AzStorageAccountKey -ResourceGroupName $ResourceGroupName -Name $StorageAccountName
+$StorageKey = $Keys[0].Value
 
-if (-not $StorageAcct) {
-    Throw "Could not find Storage Account '$StorageAccountName' in Resource Group '$ResourceGroupName'. Verify names and login."
-}
-$StorageCtx = $StorageAcct.Context
+# 2. Create Storage Context
+Write-Host "Creating Storage Context..."
+$StorageCtx = New-AzStorageContext -StorageAccountName $StorageAccountName -StorageAccountKey $StorageKey
 
-# Ensure Container
+# 3. Ensure Container
 if (-not (Get-AzStorageContainer -Name $StorageContainerName -Context $StorageCtx -ErrorAction SilentlyContinue)) {
     New-AzStorageContainer -Name $StorageContainerName -Context $StorageCtx -Permission Blob
 }
 
-# Upload
+# 4. Upload
 Write-Host "Uploading to Blob Storage..."
 Set-AzStorageBlobContent -File $ZipPath -Container $StorageContainerName -Blob "Server2025_Baseline.zip" -Context $StorageCtx -Force | Out-Null
 
-# SAS Token
+# 5. SAS Token
 $StartTime = Get-Date
 $EndTime = $StartTime.AddYears(3)
 $SasToken = New-AzStorageBlobSASToken -Container $StorageContainerName -Blob "Server2025_Baseline.zip" -Permission r -Context $StorageCtx -StartTime $StartTime -ExpiryTime $EndTime -FullUri
 
-# Create Policy Definition
+# 6. Create Policy Definition
 Write-Host "Creating Azure Policy Definition..."
 $PolicyDir = Join-Path $WorkDir "Policy"
 New-Item $PolicyDir -ItemType Directory -Force | Out-Null
 
-# We set PSModulePath to use our clean module download to avoid conflicts
+# Temporarily isolate environment for Policy Generator to avoid conflicts
 $env:PSModulePath = "$ModuleDir;C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
 Import-Module GuestConfiguration -Force
 
@@ -149,7 +147,7 @@ New-GuestConfigurationPolicy `
 # Restore Module Path
 $env:PSModulePath = [Environment]::GetEnvironmentVariable("PSModulePath", "Machine")
 
-# Publish
+# 7. Publish
 $PolicyJson = Get-ChildItem "$PolicyDir\*.json" | Select-Object -First 1
 Write-Host "Publishing Policy JSON: $($PolicyJson.Name)..."
 Publish-GuestConfigurationPolicy -Path $PolicyJson.FullName -Verbose
