@@ -1,0 +1,6 @@
+Event
+| where EventLog == "Microsoft-Windows-DSC/Operational"
+| where EventID in (4257, 4106)
+| summarize arg_max(TimeGenerated, *) by Computer
+| project Computer, Status = case(EventID == 4257, "Compliant", "Error")
+| summarize Count = count() by Status
