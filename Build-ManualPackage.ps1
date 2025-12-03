@@ -2,12 +2,12 @@
 
 # 1. Compiles MOF in isolation.
 # 2. Generates Metadata & Zips manually.
-# 3. Creates Policy (using temp path).
-# 4. Publishes Policy (restoring path FIRST, then Importing).
+# 3. Creates Policy (Temp Path).
+# 4. Publishes Policy (Merged Path: Temp + System).
 
 param(
     [string]$ResourceGroupName    = "demo-rg-arc-gcp",
-    [string]$StorageAccountName   = "storageacc001010", 
+    [string]$StorageAccountName   = "testacc001010", 
     [string]$StorageContainerName = "dsc-configs",
     [string]$ConfigFilePath       = "C:\DSC\Server2025_Baseline.ps1",
     [string]$WorkDir              = "C:\DSC\ManualBuild",
@@ -16,7 +16,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# CAPTURE INITIAL PATH (Crucial for later)
+# CAPTURE INITIAL PATH
 $InitialPSModulePath = $env:PSModulePath
 
 # --- PHASE 1: AZURE LOGIN --------------------------------------------------
@@ -120,7 +120,6 @@ Write-Host "   [Hash] SHA256: $ContentHash" -ForegroundColor Yellow
 # --- PHASE 5: UPLOAD & CREATE POLICY ---------------------------------------
 Write-Host "`n--- PHASE 5: Upload & Policy Gen ---" -ForegroundColor Cyan
 
-# Storage
 Write-Host "Fetching Storage Account Keys..."
 $Keys = Get-AzStorageAccountKey -ResourceGroupName $ResourceGroupName -Name $StorageAccountName
 $StorageCtx = New-AzStorageContext -StorageAccountName $StorageAccountName -StorageAccountKey $Keys[0].Value
@@ -136,13 +135,11 @@ $StartTime = Get-Date
 $EndTime = $StartTime.AddYears(3)
 $SasToken = New-AzStorageBlobSASToken -Container $StorageContainerName -Blob "Server2025_Baseline.zip" -Permission r -Context $StorageCtx -StartTime $StartTime -ExpiryTime $EndTime -FullUri
 
-# Create Policy Definition
 Write-Host "Creating Azure Policy Definition..."
 $PolicyDir = Join-Path $WorkDir "Policy"
 New-Item $PolicyDir -ItemType Directory -Force | Out-Null
 
-# --- CRITICAL: ISOLATE ENVIRONMENT FOR CREATION ---
-# We force PSModulePath to look ONLY at our temp folder to fix the "ContentHash" parameter bug
+# ISOLATED PATH for Policy Creation (Avoids Newtonsoft version conflicts)
 $env:PSModulePath = "$ModuleDir;C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
 Import-Module GuestConfiguration -Force
 
@@ -167,33 +164,27 @@ New-GuestConfigurationPolicy @PolicyParams
 # --- PHASE 6: PUBLISH POLICY -----------------------------------------------
 Write-Host "`n--- PHASE 6: Publish Policy ---" -ForegroundColor Cyan
 
-# --- CRITICAL: RESTORE ENVIRONMENT FOR PUBLISHING ---
-# We must restore the path so 'Az' modules can be found.
-# THEN we explicitly import the GuestConfig module so 'Publish-' can be found.
+# Remove the module from the current session so we can re-load it cleanly with new path
+Remove-Module GuestConfiguration -Force -ErrorAction SilentlyContinue
 
-$env:PSModulePath = $InitialPSModulePath
+# CRITICAL FIX: MERGE PATHS
+# We include our ManualBuild modules FIRST (so we get the right GuestConfig version)
+# We include the Initial System Path SECOND (so we get the Az modules required for publishing)
+$env:PSModulePath = "$ModuleDir;$InitialPSModulePath"
 
 $PolicyJson = Get-ChildItem "$PolicyDir\*.json" | Select-Object -First 1
 Write-Host "Publishing Policy JSON: $($PolicyJson.Name)..."
 
-# Find and Import the clean GuestConfig module explicitly
-$GuestConfigPsd1 = Join-Path $ModuleDir "GuestConfiguration"
-$GuestConfigPsd1 = Get-ChildItem "$GuestConfigPsd1\*\GuestConfiguration.psd1" | Select-Object -First 1 -ExpandProperty FullName
+Import-Module GuestConfiguration -Force
 
-if ($GuestConfigPsd1) {
-    Write-Host "   [Importing] $GuestConfigPsd1"
-    # Scope Global ensures it persists despite any context switching
-    Import-Module $GuestConfigPsd1 -Force -Scope Global
-} else {
-    Throw "Could not find GuestConfiguration module in $ModuleDir"
-}
-
-# Verify Command Availability
 if (-not (Get-Command Publish-GuestConfigurationPolicy -ErrorAction SilentlyContinue)) {
-    Throw "Command 'Publish-GuestConfigurationPolicy' is missing. Check 'GuestConfiguration' module installation."
+    Throw "Command 'Publish-GuestConfigurationPolicy' missing even after path fix."
 }
 
 Publish-GuestConfigurationPolicy -Path $PolicyJson.FullName -Verbose
+
+# Restore original path for cleanliness
+$env:PSModulePath = $InitialPSModulePath
 
 Write-Host "`n----------------------------------------------------------------"
 Write-Host "SUCCESS! Policy '$PolicyName' created." -ForegroundColor Green
