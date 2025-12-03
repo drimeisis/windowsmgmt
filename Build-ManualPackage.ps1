@@ -1,14 +1,13 @@
 # Build-ManualPackage.ps1
-# v10.0 - Fixes Module Loading Order for Publish Cmdlet
-# 
+
 # 1. Compiles MOF in isolation.
 # 2. Generates Metadata & Zips manually.
-# 3. Creates Policy (using temp module).
-# 4. Publishes Policy (explicitly loading temp module).
+# 3. Creates Policy (using temp path).
+# 4. Publishes Policy (restoring path FIRST, then Importing).
 
 param(
     [string]$ResourceGroupName    = "demo-rg-arc-gcp",
-    [string]$StorageAccountName   = "testacc001010", 
+    [string]$StorageAccountName   = "storageacc001010", 
     [string]$StorageContainerName = "dsc-configs",
     [string]$ConfigFilePath       = "C:\DSC\Server2025_Baseline.ps1",
     [string]$WorkDir              = "C:\DSC\ManualBuild",
@@ -16,6 +15,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# CAPTURE INITIAL PATH (Crucial for later)
+$InitialPSModulePath = $env:PSModulePath
 
 # --- PHASE 1: AZURE LOGIN --------------------------------------------------
 Write-Host "--- PHASE 1: Azure Authentication ---" -ForegroundColor Cyan
@@ -48,7 +50,6 @@ New-Item $StagingDir -ItemType Directory -Force | Out-Null
 
 # Download required modules
 $Modules = @("SecurityPolicyDsc", "AuditPolicyDsc", "GPRegistryPolicyDsc", "NetworkingDsc")
-# Also need GuestConfig for the Policy step
 Save-Module -Name "GuestConfiguration" -Path $ModuleDir -Force -ErrorAction Stop
 
 foreach ($m in $Modules) {
@@ -81,10 +82,7 @@ if (-not (Test-Path "$MofDir\Server2025_Baseline.mof")) { Throw "MOF file missin
 # --- PHASE 4: MANUAL PACKAGE ASSEMBLY --------------------------------------
 Write-Host "`n--- PHASE 4: Manually Building Package ---" -ForegroundColor Cyan
 
-# 1. Copy MOF
 Copy-Item "$MofDir\Server2025_Baseline.mof" -Destination $StagingDir
-
-# 2. Copy Modules
 $StagingModules = Join-Path $StagingDir "Modules"
 New-Item $StagingModules -ItemType Directory -Force | Out-Null
 
@@ -92,7 +90,6 @@ foreach ($m in $Modules) {
     Copy-Item "$ModuleDir\$m" -Destination $StagingModules -Recurse
 }
 
-# 3. GENERATE METADATA
 Write-Host "   [Metadata] Generating guestconfiguration.json..."
 $ModuleList = @()
 foreach ($m in $Modules) {
@@ -112,44 +109,40 @@ $MetaJson = @{
 } | ConvertTo-Json -Depth 5
 Set-Content -Path "$StagingDir\guestconfiguration.json" -Value $MetaJson -Encoding UTF8
 
-# 4. Zip
 Write-Host "   [Zipping] Creating Server2025_Baseline.zip..."
 $ZipPath = Join-Path $WorkDir "Server2025_Baseline.zip"
 Compress-Archive -Path "$StagingDir\*" -DestinationPath $ZipPath -Force
 
-# 5. Calculate Hash
 $HashObj = Get-FileHash -Path $ZipPath -Algorithm SHA256
 $ContentHash = $HashObj.Hash
 Write-Host "   [Hash] SHA256: $ContentHash" -ForegroundColor Yellow
 
-# --- PHASE 5: UPLOAD & PUBLISH ---------------------------------------------
-Write-Host "`n--- PHASE 5: Upload & Publish ---" -ForegroundColor Cyan
+# --- PHASE 5: UPLOAD & CREATE POLICY ---------------------------------------
+Write-Host "`n--- PHASE 5: Upload & Policy Gen ---" -ForegroundColor Cyan
 
-# 1. Storage Keys
+# Storage
 Write-Host "Fetching Storage Account Keys..."
 $Keys = Get-AzStorageAccountKey -ResourceGroupName $ResourceGroupName -Name $StorageAccountName
 $StorageCtx = New-AzStorageContext -StorageAccountName $StorageAccountName -StorageAccountKey $Keys[0].Value
 
-# 2. Ensure Container
 if (-not (Get-AzStorageContainer -Name $StorageContainerName -Context $StorageCtx -ErrorAction SilentlyContinue)) {
     New-AzStorageContainer -Name $StorageContainerName -Context $StorageCtx -Permission Blob
 }
 
-# 3. Upload
 Write-Host "Uploading to Blob Storage..."
 Set-AzStorageBlobContent -File $ZipPath -Container $StorageContainerName -Blob "Server2025_Baseline.zip" -Context $StorageCtx -Force | Out-Null
 
-# 4. SAS Token
 $StartTime = Get-Date
 $EndTime = $StartTime.AddYears(3)
 $SasToken = New-AzStorageBlobSASToken -Container $StorageContainerName -Blob "Server2025_Baseline.zip" -Permission r -Context $StorageCtx -StartTime $StartTime -ExpiryTime $EndTime -FullUri
 
-# 5. Create Policy Definition
+# Create Policy Definition
 Write-Host "Creating Azure Policy Definition..."
 $PolicyDir = Join-Path $WorkDir "Policy"
 New-Item $PolicyDir -ItemType Directory -Force | Out-Null
 
-# Temporarily switch to clean module path to ensure we load the downloaded GuestConfig module
+# --- CRITICAL: ISOLATE ENVIRONMENT FOR CREATION ---
+# We force PSModulePath to look ONLY at our temp folder to fix the "ContentHash" parameter bug
 $env:PSModulePath = "$ModuleDir;C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
 Import-Module GuestConfiguration -Force
 
@@ -171,26 +164,35 @@ if (Get-Help New-GuestConfigurationPolicy -Parameter ContentHash -ErrorAction Si
 
 New-GuestConfigurationPolicy @PolicyParams
 
-# 6. Publish
+# --- PHASE 6: PUBLISH POLICY -----------------------------------------------
+Write-Host "`n--- PHASE 6: Publish Policy ---" -ForegroundColor Cyan
+
+# --- CRITICAL: RESTORE ENVIRONMENT FOR PUBLISHING ---
+# We must restore the path so 'Az' modules can be found.
+# THEN we explicitly import the GuestConfig module so 'Publish-' can be found.
+
+$env:PSModulePath = $InitialPSModulePath
+
 $PolicyJson = Get-ChildItem "$PolicyDir\*.json" | Select-Object -First 1
 Write-Host "Publishing Policy JSON: $($PolicyJson.Name)..."
 
-# CRITICAL FIX: Ensure the module is loaded from the SPECIFIC temporary path
-# We must do this before restoring the default module path
+# Find and Import the clean GuestConfig module explicitly
 $GuestConfigPsd1 = Join-Path $ModuleDir "GuestConfiguration"
 $GuestConfigPsd1 = Get-ChildItem "$GuestConfigPsd1\*\GuestConfiguration.psd1" | Select-Object -First 1 -ExpandProperty FullName
 
 if ($GuestConfigPsd1) {
     Write-Host "   [Importing] $GuestConfigPsd1"
-    Import-Module $GuestConfigPsd1 -Force
+    # Scope Global ensures it persists despite any context switching
+    Import-Module $GuestConfigPsd1 -Force -Scope Global
 } else {
     Throw "Could not find GuestConfiguration module in $ModuleDir"
 }
 
-# Restore Module Path so 'Az' and other system modules work correctly during publish
-$env:PSModulePath = [Environment]::GetEnvironmentVariable("PSModulePath", "Machine")
+# Verify Command Availability
+if (-not (Get-Command Publish-GuestConfigurationPolicy -ErrorAction SilentlyContinue)) {
+    Throw "Command 'Publish-GuestConfigurationPolicy' is missing. Check 'GuestConfiguration' module installation."
+}
 
-# Execute Publish
 Publish-GuestConfigurationPolicy -Path $PolicyJson.FullName -Verbose
 
 Write-Host "`n----------------------------------------------------------------"
