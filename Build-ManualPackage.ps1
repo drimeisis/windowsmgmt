@@ -1,9 +1,8 @@
 # Build-ManualPackage.ps1
 
 # 1. Compiles MOF in isolation.
-# 2. Generates Metadata.
-# 3. Zips manually.
-# 4. Creates Policy using Splatting (No backticks to break).
+# 2. Generates Metadata & Zips manually.
+# 3. Creates & Publishes Policy (Fixes Pathing & Version parameters).
 
 param(
     [string]$ResourceGroupName    = "demo-rg-arc-gcp",
@@ -47,6 +46,7 @@ New-Item $StagingDir -ItemType Directory -Force | Out-Null
 
 # Download required modules
 $Modules = @("SecurityPolicyDsc", "AuditPolicyDsc", "GPRegistryPolicyDsc", "NetworkingDsc")
+# Also need GuestConfig for the Policy step
 Save-Module -Name "GuestConfiguration" -Path $ModuleDir -Force -ErrorAction Stop
 
 foreach ($m in $Modules) {
@@ -58,14 +58,18 @@ foreach ($m in $Modules) {
 Write-Host "`n--- PHASE 3: Compiling MOF ---" -ForegroundColor Cyan
 
 $CompilerScript = Join-Path $WorkDir "Worker_Compile.ps1"
-# Note: We keep this on one line in the variable to avoid here-string issues
+# We use a Here-String for the worker code.
+# IMPORTANT: The closing "@" must be the very first character on the line.
 $CompilerCode = @"
     `$ErrorActionPreference = 'Stop'
     `$env:PSModulePath = "$ModuleDir;C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
+    
     Write-Host "   [Compiler] Compiling..."
     . "$ConfigFilePath"
     Server2025_Baseline -NodeName 'localhost' -OutputPath "$MofDir"
+    
     `$Old = Join-Path "$MofDir" "localhost.mof"
+    `$New = Join-Path "$MofDir" "Server2025_Baseline.mof"
     Rename-Item -Path `$Old -NewName "Server2025_Baseline.mof" -Force
 "@
 Set-Content -Path $CompilerScript -Value $CompilerCode
@@ -121,7 +125,7 @@ Write-Host "   [Hash] SHA256: $ContentHash" -ForegroundColor Yellow
 # --- PHASE 5: UPLOAD & PUBLISH ---------------------------------------------
 Write-Host "`n--- PHASE 5: Upload & Publish ---" -ForegroundColor Cyan
 
-# 1. Storage Authentication
+# 1. Storage Keys
 Write-Host "Fetching Storage Account Keys..."
 $Keys = Get-AzStorageAccountKey -ResourceGroupName $ResourceGroupName -Name $StorageAccountName
 $StorageCtx = New-AzStorageContext -StorageAccountName $StorageAccountName -StorageAccountKey $Keys[0].Value
@@ -140,15 +144,15 @@ $StartTime = Get-Date
 $EndTime = $StartTime.AddYears(3)
 $SasToken = New-AzStorageBlobSASToken -Container $StorageContainerName -Blob "Server2025_Baseline.zip" -Permission r -Context $StorageCtx -StartTime $StartTime -ExpiryTime $EndTime -FullUri
 
-# 5. Create Policy Definition using SPLATTING (Fixes the Prompt Issue)
+# 5. Create Policy Definition using SPLATTING
 Write-Host "Creating Azure Policy Definition..."
 $PolicyDir = Join-Path $WorkDir "Policy"
 New-Item $PolicyDir -ItemType Directory -Force | Out-Null
 
+# Set path to our downloaded modules so GuestConfiguration loads correctly
 $env:PSModulePath = "$ModuleDir;C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
 Import-Module GuestConfiguration -Force
 
-# We use a Hashtable for parameters. This cannot break via copy-paste.
 $PolicyParams = @{
     ContentUri      = $SasToken
     DisplayName     = $PolicyName
@@ -156,26 +160,32 @@ $PolicyParams = @{
     Path            = $PolicyDir
     Platform        = "Windows"
     Mode            = "ApplyAndAutoCorrect"
-    PolicyId        = (New-Guid).ToString() # Random GUID to satisfy mandatory param
+    PolicyVersion   = "1.0.0"               # FIX: Added required Version
+    PolicyId        = (New-Guid).ToString() # FIX: Added required GUID
     Verbose         = $true
 }
 
-# We dynamically add ContentHash if your module supports it, otherwise we skip it
-# This handles the version difference gracefully
+# Check if this version supports ContentHash (some do, some don't)
 if (Get-Help New-GuestConfigurationPolicy -Parameter ContentHash -ErrorAction SilentlyContinue) {
     $PolicyParams['ContentHash'] = $ContentHash
 }
 
-# Execute with Splatting
+# Execute
 New-GuestConfigurationPolicy @PolicyParams
-
-# Restore Module Path
-$env:PSModulePath = [Environment]::GetEnvironmentVariable("PSModulePath", "Machine")
 
 # 6. Publish
 $PolicyJson = Get-ChildItem "$PolicyDir\*.json" | Select-Object -First 1
 Write-Host "Publishing Policy JSON: $($PolicyJson.Name)..."
+
+# Ensure the module is still loaded and command is available
+if (-not (Get-Command Publish-GuestConfigurationPolicy -ErrorAction SilentlyContinue)) {
+    Import-Module GuestConfiguration -Force
+}
+
 Publish-GuestConfigurationPolicy -Path $PolicyJson.FullName -Verbose
+
+# 7. Restore Module Path (ONLY AFTER EVERYTHING IS DONE)
+$env:PSModulePath = [Environment]::GetEnvironmentVariable("PSModulePath", "Machine")
 
 Write-Host "`n----------------------------------------------------------------"
 Write-Host "SUCCESS! Policy '$PolicyName' created." -ForegroundColor Green
