@@ -1,10 +1,9 @@
 # Build-ManualPackage.ps1
-# v7.0 - Final Verified
-# 
+
 # 1. Compiles MOF in isolation.
 # 2. GENERATES Metadata (guestconfiguration.json).
 # 3. Zips manually.
-# 4. Creates Policy (Standard parameters only).
+# 4. Creates Policy (With explicit PolicyId).
 
 param(
     [string]$ResourceGroupName    = "demo-rg-arc-gcp",
@@ -48,7 +47,6 @@ New-Item $StagingDir -ItemType Directory -Force | Out-Null
 
 # Download required modules
 $Modules = @("SecurityPolicyDsc", "AuditPolicyDsc", "GPRegistryPolicyDsc", "NetworkingDsc")
-# Also need GuestConfig for the Policy step
 Save-Module -Name "GuestConfiguration" -Path $ModuleDir -Force -ErrorAction Stop
 
 foreach ($m in $Modules) {
@@ -150,12 +148,14 @@ Write-Host "Creating Azure Policy Definition..."
 $PolicyDir = Join-Path $WorkDir "Policy"
 New-Item $PolicyDir -ItemType Directory -Force | Out-Null
 
-# We use the clean module path for this step to ensure New-GuestConfigurationPolicy loads
+# Generate a consistent GUID for the policy ID to satisfy the prompt
+$PolicyId = (New-Guid).ToString()
+
+# We use the clean module path for this step
 $env:PSModulePath = "$ModuleDir;C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
 Import-Module GuestConfiguration -Force
 
-# FIX: Removed -ContentHash parameter entirely.
-# The cmdlet will use the SAS token to download the package and calculate the hash internally.
+# FIX: Added -PolicyId parameter
 New-GuestConfigurationPolicy `
     -ContentUri $SasToken `
     -DisplayName $PolicyName `
@@ -163,6 +163,7 @@ New-GuestConfigurationPolicy `
     -Path $PolicyDir `
     -Platform Windows `
     -Mode ApplyAndAutoCorrect `
+    -PolicyId $PolicyId `
     -Verbose
 
 # Restore Module Path
