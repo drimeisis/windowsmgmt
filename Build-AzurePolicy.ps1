@@ -1,105 +1,126 @@
-# Build-AzurePolicy.ps1
-
+# Build-Sandboxed.ps1
+# Creates a clean, isolated environment to compile and package the DSC configuration
+# bypassing any version conflicts on the host machine.
 
 param(
     [string]$ResourceGroupName    = "demo-rg-arc-gcp",
     [string]$StorageAccountName   = "testacc001010", 
     [string]$StorageContainerName = "dsc-configs",
-
-    # We use Absolute Paths now to avoid "File Not Found" errors
     [string]$ConfigFilePath       = "C:\DSC\Server2025_Baseline.ps1",
-    [string]$BuildDir             = "C:\DSC\Build",
+    [string]$WorkDir              = "C:\DSC\SandboxBuild",
     [string]$PolicyName           = "Audit-Server2025-Baseline"
 )
 
 $ErrorActionPreference = 'Stop'
 
-# --- 1. Connect to Azure (Device Code Mode) --------------------------------
-Write-Host "Step 1: Connecting to Azure..."
+# --- 1. setup Sandbox Directory --------------------------------------------
+Write-Host "Step 1: Preparing Sandbox at $WorkDir..."
+if (Test-Path $WorkDir) { Remove-Item $WorkDir -Recurse -Force }
+$ModuleDir = Join-Path $WorkDir "Modules"
+New-Item $ModuleDir -ItemType Directory -Force | Out-Null
+
+# --- 2. Download Fresh Modules to Sandbox ----------------------------------
+Write-Host "Step 2: Saving clean modules locally..."
+$RequiredModules = @(
+    "SecurityPolicyDsc", 
+    "AuditPolicyDsc", 
+    "GPRegistryPolicyDsc", 
+    "NetworkingDsc", 
+    "GuestConfiguration"
+)
+
+foreach ($mod in $RequiredModules) {
+    Write-Host "   - Downloading $mod..."
+    # We save to our temp folder so we control exactly which version exists
+    Save-Module -Name $mod -Path $ModuleDir -Force
+}
+
+# --- 3. Isolate Environment ------------------------------------------------
+Write-Host "Step 3: Isolating PowerShell Session..."
+
+# Save original path to restore later if needed
+$OriginalModulePath = $env:PSModulePath
+
+# Set path to ONLY our sandbox + System32 (essential for basic PS commands)
+# We deliberately EXCLUDE 'C:\Program Files\WindowsPowerShell\Modules'
+$env:PSModulePath = "$ModuleDir;C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
+
+Write-Host "   - Module Path restricted. Loaded modules:"
+Get-Module -ListAvailable | Select-Object Name, Version | Format-Table -AutoSize
+
+# --- 4. Authenticate (Device Code) -----------------------------------------
+Write-Host "Step 4: Connecting to Azure..."
+# We try-catch because changing the module path might affect Az module loading
+# so we load Az explicitly from the system if needed, or assume it's loaded in parent.
 try {
-    # Check if already connected
+    # If Az is already loaded in memory, this works. 
+    # If not, we might need to add its path back or just rely on parent session.
     $null = Get-AzContext -ErrorAction Stop
-    Write-Host "Already connected."
+    Write-Host "   - Already connected."
 }
 catch {
-    Write-Warning "Please open a browser to https://microsoft.com/devicelogin and enter the code shown below."
+    Write-Warning "   - Please check your browser for Device Code login."
+    # We temporarily add Program Files back just to load Az if it's missing
+    $env:PSModulePath = $OriginalModulePath
     Connect-AzAccount -UseDeviceAuthentication
+    # Re-isolate
+    $env:PSModulePath = "$ModuleDir;C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
 }
 
-# --- 2. Compile the MOF (Locally) ------------------------------------------
-Write-Host "Step 2: Compiling MOF..."
-
-# Clean up build directory
-if (Test-Path $BuildDir) { Remove-Item $BuildDir -Recurse -Force }
-$MofDir = Join-Path $BuildDir "MOF"
+# --- 5. Compile MOF --------------------------------------------------------
+Write-Host "Step 5: Compiling MOF in isolation..."
+$MofDir = Join-Path $WorkDir "MOF"
 New-Item $MofDir -ItemType Directory -Force | Out-Null
 
-# Verify Source Exists
-if (-not (Test-Path $ConfigFilePath)) {
-    Throw "Configuration file not found at: $ConfigFilePath"
-}
-
-# Dot-Source to load the function into memory
+# Load the config
 . $ConfigFilePath
 
 # Compile
-# This creates C:\DSC\Build\MOF\localhost.mof
 Server2025_Baseline -NodeName 'localhost' -OutputPath $MofDir
 
-# CRITICAL FIX: Azure Guest Config requires the MOF name to match the Package name.
-# We must rename 'localhost.mof' to 'Server2025_Baseline.mof'
+# Rename for Guest Config requirement
 $OldMof = Join-Path $MofDir "localhost.mof"
 $NewMof = Join-Path $MofDir "Server2025_Baseline.mof"
 Rename-Item -Path $OldMof -NewName "Server2025_Baseline.mof" -Force
 
-# --- 3. Create the Guest Configuration Package (.zip) ----------------------
-Write-Host "Step 3: Packaging Configuration..."
-$PackageDir = Join-Path $BuildDir "Package"
+# --- 6. Package (.zip) -----------------------------------------------------
+Write-Host "Step 6: Packaging (This should now succeed)..."
+$PackageDir = Join-Path $WorkDir "Package"
 New-Item $PackageDir -ItemType Directory -Force | Out-Null
 
-# This bundles the MOF + Modules into a .zip
-$Package = New-GuestConfigurationPackage `
+# Import GuestConfiguration from our CLEAN folder
+Import-Module GuestConfiguration -Force
+
+New-GuestConfigurationPackage `
     -Name "Server2025_Baseline" `
     -Configuration $NewMof `
     -Path $PackageDir `
     -Force
 
-# --- 4. Upload to Azure Blob Storage ---------------------------------------
-Write-Host "Step 4: Uploading to Azure Storage..."
+# --- 7. Upload & Publish ---------------------------------------------------
+Write-Host "Step 7: Uploading and Publishing..."
 
-# Create Container if missing
+# Restore path temporarily to ensure Az modules work fine for upload
+$env:PSModulePath = $OriginalModulePath
+
 $Context = (Get-AzStorageAccount -ResourceGroupName $ResourceGroupName -Name $StorageAccountName).Context
+
+# Ensure Container
 if (-not (Get-AzStorageContainer -Name $StorageContainerName -Context $Context -ErrorAction SilentlyContinue)) {
     New-AzStorageContainer -Name $StorageContainerName -Context $Context -Permission Blob
 }
 
-# Upload
-$Blob = Set-AzStorageBlobContent `
-    -File $Package.Path `
-    -Container $StorageContainerName `
-    -Blob "Server2025_Baseline.zip" `
-    -Context $Context `
-    -Force
+# Upload Zip
+$ZipPath = Join-Path $PackageDir "Server2025_Baseline.zip"
+Set-AzStorageBlobContent -File $ZipPath -Container $StorageContainerName -Blob "Server2025_Baseline.zip" -Context $Context -Force
 
-# --- 5. Generate SAS Token -------------------------------------------------
-Write-Host "Step 5: Generating SAS Token..."
-$StartTime = Get-Date
-$EndTime = $StartTime.AddYears(3)
-$SasToken = New-AzStorageBlobSASToken `
-    -Container $StorageContainerName `
-    -Blob "Server2025_Baseline.zip" `
-    -Permission r `
-    -Context $Context `
-    -StartTime $StartTime `
-    -ExpiryTime $EndTime `
-    -FullUri
+# SAS Token
+$SasToken = New-AzStorageBlobSASToken -Container $StorageContainerName -Blob "Server2025_Baseline.zip" -Permission r -Context $Context -StartTime (Get-Date) -ExpiryTime (Get-Date).AddYears(3) -FullUri
 
-# --- 6. Create Azure Policy Definition -------------------------------------
-Write-Host "Step 6: Creating Azure Policy Definition..."
-$PolicyDir = Join-Path $BuildDir "Policy"
+# Policy
+$PolicyDir = Join-Path $WorkDir "Policy"
 New-Item $PolicyDir -ItemType Directory -Force | Out-Null
 
-# Create the Policy files locally
 New-GuestConfigurationPolicy `
     -ContentUri $SasToken `
     -DisplayName $PolicyName `
@@ -109,13 +130,7 @@ New-GuestConfigurationPolicy `
     -Mode ApplyAndAutoCorrect `
     -Verbose
 
-# Publish to Azure
 $PolicyJson = Get-ChildItem "$PolicyDir\*.json" | Select-Object -First 1
 Publish-GuestConfigurationPolicy -Path $PolicyJson.FullName -Verbose
 
-Write-Host "--------------------------------------------------------"
-Write-Host "Build Complete!"
-Write-Host "1. Go to Azure Portal -> Policy -> Definitions"
-Write-Host "2. Search for '$PolicyName'"
-Write-Host "3. Assign it to your Arc Servers."
-Write-Host "--------------------------------------------------------"
+Write-Host "SUCCESS. Policy '$PolicyName' has been published."
