@@ -1,9 +1,10 @@
 # Build-ManualPackage.ps1
-
+# v7.0 - Final Verified
+# 
 # 1. Compiles MOF in isolation.
 # 2. GENERATES Metadata (guestconfiguration.json).
 # 3. Zips manually.
-# 4. Creates Policy (allowing cmdlet to calculate hash from URL).
+# 4. Creates Policy (Standard parameters only).
 
 param(
     [string]$ResourceGroupName    = "demo-rg-arc-gcp",
@@ -91,12 +92,12 @@ foreach ($m in $Modules) {
     Copy-Item "$ModuleDir\$m" -Destination $StagingModules -Recurse
 }
 
-# 3. GENERATE METADATA (guestconfiguration.json) - CRITICAL FIX
+# 3. GENERATE METADATA (guestconfiguration.json)
 Write-Host "   [Metadata] Generating guestconfiguration.json..."
 
 $ModuleList = @()
 foreach ($m in $Modules) {
-    # Get version from the folder name we just downloaded
+    # Get version from the folder name
     $VersionDir = Get-ChildItem "$ModuleDir\$m" | Select-Object -First 1
     if ($VersionDir) {
         $ModuleList += @{ name = $m; version = $VersionDir.Name }
@@ -153,7 +154,8 @@ New-Item $PolicyDir -ItemType Directory -Force | Out-Null
 $env:PSModulePath = "$ModuleDir;C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
 Import-Module GuestConfiguration -Force
 
-# FIX: Removed -ContentHash. The cmdlet will download the package from the Uri to calculate it.
+# FIX: Removed -ContentHash parameter entirely.
+# The cmdlet will use the SAS token to download the package and calculate the hash internally.
 New-GuestConfigurationPolicy `
     -ContentUri $SasToken `
     -DisplayName $PolicyName `
