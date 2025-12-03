@@ -1,0 +1,1 @@
+powershell -ExecutionPolicy Bypass -File Bootstrap-Server2025Baseline.ps1
