@@ -1,7 +1,8 @@
 # Build-ManualPackage.ps1
+
 # 1. Compiles MOF in isolation.
 # 2. MANUALLY constructs the Azure Guest Configuration Zip structure.
-# 3. Uploads and creates Policy using manually calculated Hash.
+# 3. Uploads (using correct Storage Context) and creates Policy.
 
 param(
     [string]$ResourceGroupName    = "demo-rg-arc-gcp",
@@ -37,16 +38,16 @@ Write-Host "`n--- PHASE 2: Preparing Workspace ---" -ForegroundColor Cyan
 if (Test-Path $WorkDir) { Remove-Item $WorkDir -Recurse -Force }
 $ModuleDir  = Join-Path $WorkDir "Modules"
 $MofDir     = Join-Path $WorkDir "MOF"
-$StagingDir = Join-Path $WorkDir "Staging" # Where we build the zip content
+$StagingDir = Join-Path $WorkDir "Staging" 
 
 New-Item $ModuleDir -ItemType Directory -Force | Out-Null
 New-Item $MofDir -ItemType Directory -Force | Out-Null
 New-Item $StagingDir -ItemType Directory -Force | Out-Null
 
-# Download required modules (We need these for compilation AND for the zip)
+# Download required modules 
 $Modules = @("SecurityPolicyDsc", "AuditPolicyDsc", "GPRegistryPolicyDsc", "NetworkingDsc")
 
-# Also need GuestConfig for the Policy step later, but not for the zip
+# Also need GuestConfig for the Policy step later
 Save-Module -Name "GuestConfiguration" -Path $ModuleDir -Force -ErrorAction Stop
 
 foreach ($m in $Modules) {
@@ -74,18 +75,10 @@ Set-Content -Path $CompilerScript -Value $CompilerCode
 
 $Proc = Start-Process "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass", "-File `"$CompilerScript`"" -Wait -NoNewWindow -PassThru
 if ($Proc.ExitCode -ne 0) { Throw "Compilation failed." }
-
 if (-not (Test-Path "$MofDir\Server2025_Baseline.mof")) { Throw "MOF file missing." }
 
 # --- PHASE 4: MANUAL PACKAGE ASSEMBLY --------------------------------------
 Write-Host "`n--- PHASE 4: Manually Building Package ---" -ForegroundColor Cyan
-# Instead of using New-GuestConfigurationPackage, we build the folder structure ourselves.
-# Structure:
-#   Root/
-#     Server2025_Baseline.mof
-#     Modules/
-#       ModuleA/Version/...
-#       ModuleB/Version/...
 
 # 1. Copy MOF
 Copy-Item "$MofDir\Server2025_Baseline.mof" -Destination $StagingDir
@@ -95,9 +88,6 @@ $StagingModules = Join-Path $StagingDir "Modules"
 New-Item $StagingModules -ItemType Directory -Force | Out-Null
 
 foreach ($m in $Modules) {
-    # We copy the full version folder from our clean download
-    # Source: C:\DSC\Clean\Modules\SecurityPolicyDsc
-    # Dest:   C:\DSC\Clean\Staging\Modules\SecurityPolicyDsc
     Copy-Item "$ModuleDir\$m" -Destination $StagingModules -Recurse
 }
 
@@ -106,7 +96,7 @@ Write-Host "   [Zipping] Creating Server2025_Baseline.zip..."
 $ZipPath = Join-Path $WorkDir "Server2025_Baseline.zip"
 Compress-Archive -Path "$StagingDir\*" -DestinationPath $ZipPath -Force
 
-# 4. Calculate Hash (Required for Policy)
+# 4. Calculate Hash
 $HashObj = Get-FileHash -Path $ZipPath -Algorithm SHA256
 $ContentHash = $HashObj.Hash
 Write-Host "   [Hash] SHA256: $ContentHash" -ForegroundColor Yellow
@@ -114,28 +104,35 @@ Write-Host "   [Hash] SHA256: $ContentHash" -ForegroundColor Yellow
 # --- PHASE 5: UPLOAD & PUBLISH ---------------------------------------------
 Write-Host "`n--- PHASE 5: Upload & Publish ---" -ForegroundColor Cyan
 
+# FIX: Get the STORAGE Context (Keys), not just the Login Context
+Write-Host "Fetching Storage Account Keys..."
+$StorageAcct = Get-AzStorageAccount -ResourceGroupName $ResourceGroupName -Name $StorageAccountName -ErrorAction SilentlyContinue
+
+if (-not $StorageAcct) {
+    Throw "Could not find Storage Account '$StorageAccountName' in Resource Group '$ResourceGroupName'. Verify names and login."
+}
+$StorageCtx = $StorageAcct.Context
+
 # Ensure Container
-if (-not (Get-AzStorageContainer -Name $StorageContainerName -Context $AzContext.Context -ErrorAction SilentlyContinue)) {
-    New-AzStorageContainer -Name $StorageContainerName -Context $AzContext.Context -Permission Blob
+if (-not (Get-AzStorageContainer -Name $StorageContainerName -Context $StorageCtx -ErrorAction SilentlyContinue)) {
+    New-AzStorageContainer -Name $StorageContainerName -Context $StorageCtx -Permission Blob
 }
 
 # Upload
 Write-Host "Uploading to Blob Storage..."
-Set-AzStorageBlobContent -File $ZipPath -Container $StorageContainerName -Blob "Server2025_Baseline.zip" -Context $AzContext.Context -Force | Out-Null
+Set-AzStorageBlobContent -File $ZipPath -Container $StorageContainerName -Blob "Server2025_Baseline.zip" -Context $StorageCtx -Force | Out-Null
 
 # SAS Token
 $StartTime = Get-Date
 $EndTime = $StartTime.AddYears(3)
-$SasToken = New-AzStorageBlobSASToken -Container $StorageContainerName -Blob "Server2025_Baseline.zip" -Permission r -Context $AzContext.Context -StartTime $StartTime -ExpiryTime $EndTime -FullUri
+$SasToken = New-AzStorageBlobSASToken -Container $StorageContainerName -Blob "Server2025_Baseline.zip" -Permission r -Context $StorageCtx -StartTime $StartTime -ExpiryTime $EndTime -FullUri
 
 # Create Policy Definition
 Write-Host "Creating Azure Policy Definition..."
 $PolicyDir = Join-Path $WorkDir "Policy"
 New-Item $PolicyDir -ItemType Directory -Force | Out-Null
 
-# We use the GuestConfiguration module ONLY for this step (Policy JSON generation).
-# We pass it the SAS Token and the manually calculated Hash.
-# We explicitly set PSModulePath to use our clean module download to avoid conflicts.
+# We set PSModulePath to use our clean module download to avoid conflicts
 $env:PSModulePath = "$ModuleDir;C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
 Import-Module GuestConfiguration -Force
 
@@ -149,7 +146,7 @@ New-GuestConfigurationPolicy `
     -Mode ApplyAndAutoCorrect `
     -Verbose
 
-# Restore Module Path (Good Practice)
+# Restore Module Path
 $env:PSModulePath = [Environment]::GetEnvironmentVariable("PSModulePath", "Machine")
 
 # Publish
@@ -159,7 +156,6 @@ Publish-GuestConfigurationPolicy -Path $PolicyJson.FullName -Verbose
 
 Write-Host "`n----------------------------------------------------------------"
 Write-Host "SUCCESS! Policy '$PolicyName' created successfully." -ForegroundColor Green
-Write-Host "You successfully bypassed the buggy packager."
 Write-Host "1. Go to Azure Portal > Policy > Definitions."
 Write-Host "2. Assign '$PolicyName' to your Arc Servers."
 Write-Host "----------------------------------------------------------------"
