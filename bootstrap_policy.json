@@ -1,0 +1,129 @@
+{
+  "mode": "Indexed",
+  "parameters": {
+    "extensionName": {
+      "type": "String",
+      "metadata": {
+        "displayName": "Extension name",
+        "description": "Name of the Custom Script Extension instance."
+      },
+      "defaultValue": "Server2025Baseline"
+    },
+    "fileUri": {
+      "type": "String",
+      "metadata": {
+        "displayName": "Script file URI",
+        "description": "URI for the bootstrap script file to download."
+      }
+    },
+    "commandToExecute": {
+      "type": "String",
+      "metadata": {
+        "displayName": "Command to execute",
+        "description": "Command to run the downloaded bootstrap script."
+      }
+    }
+  },
+  "policyRule": {
+    "if": {
+      "allOf": [
+        {
+          "field": "type",
+          "equals": "Microsoft.HybridCompute/machines"
+        },
+        {
+          "field": "Microsoft.HybridCompute/machines/osType",
+          "equals": "Windows"
+        }
+      ]
+    },
+    "then": {
+      "effect": "deployIfNotExists",
+      "details": {
+        "type": "Microsoft.HybridCompute/machines/extensions",
+        "existenceCondition": {
+          "allOf": [
+            {
+              "field": "Microsoft.HybridCompute/machines/extensions/publisher",
+              "equals": "Microsoft.Compute"
+            },
+            {
+              "field": "Microsoft.HybridCompute/machines/extensions/type",
+              "equals": "CustomScriptExtension"
+            },
+            {
+              "field": "Microsoft.HybridCompute/machines/extensions/provisioningState",
+              "equals": "Succeeded"
+            }
+          ]
+        },
+        "roleDefinitionIds": [
+          "/providers/Microsoft.Authorization/roleDefinitions/cd570a14-e51a-42ad-bac8-bafd67325302"
+        ],
+        "deployment": {
+          "properties": {
+            "mode": "incremental",
+            "template": {
+              "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+              "contentVersion": "1.0.0.0",
+              "parameters": {
+                "machineName": {
+                  "type": "string"
+                },
+                "location": {
+                  "type": "string"
+                },
+                "extensionName": {
+                  "type": "string"
+                },
+                "fileUri": {
+                  "type": "string"
+                },
+                "commandToExecute": {
+                  "type": "string"
+                }
+              },
+              "resources": [
+                {
+                  "type": "Microsoft.HybridCompute/machines/extensions",
+                  "name": "[concat(parameters('machineName'), '/', parameters('extensionName'))]",
+                  "apiVersion": "2023-06-20-preview",
+                  "location": "[parameters('location')]",
+                  "properties": {
+                    "publisher": "Microsoft.Compute",
+                    "type": "CustomScriptExtension",
+                    "typeHandlerVersion": "1.10",
+                    "autoUpgradeMinorVersion": true,
+                    "settings": {
+                      "fileUris": "[array(parameters('fileUri'))]"
+                    },
+                    "protectedSettings": {
+                      "commandToExecute": "[parameters('commandToExecute')]"
+                    }
+                  }
+                }
+              ]
+            },
+            "parameters": {
+              "machineName": {
+                "value": "[field('name')]"
+              },
+              "location": {
+                "value": "[field('location')]"
+              },
+              "extensionName": {
+                "value": "[parameters('extensionName')]"
+              },
+              "fileUri": {
+                "value": "[parameters('fileUri')]"
+              },
+              "commandToExecute": {
+                "value": "[parameters('commandToExecute')]"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
