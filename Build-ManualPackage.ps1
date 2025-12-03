@@ -1,8 +1,10 @@
 # Build-ManualPackage.ps1
-
+# v10.0 - Fixes Module Loading Order for Publish Cmdlet
+# 
 # 1. Compiles MOF in isolation.
 # 2. Generates Metadata & Zips manually.
-# 3. Creates & Publishes Policy (Fixes Pathing & Version parameters).
+# 3. Creates Policy (using temp module).
+# 4. Publishes Policy (explicitly loading temp module).
 
 param(
     [string]$ResourceGroupName    = "demo-rg-arc-gcp",
@@ -58,8 +60,6 @@ foreach ($m in $Modules) {
 Write-Host "`n--- PHASE 3: Compiling MOF ---" -ForegroundColor Cyan
 
 $CompilerScript = Join-Path $WorkDir "Worker_Compile.ps1"
-# We use a Here-String for the worker code.
-# IMPORTANT: The closing "@" must be the very first character on the line.
 $CompilerCode = @"
     `$ErrorActionPreference = 'Stop'
     `$env:PSModulePath = "$ModuleDir;C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
@@ -144,12 +144,12 @@ $StartTime = Get-Date
 $EndTime = $StartTime.AddYears(3)
 $SasToken = New-AzStorageBlobSASToken -Container $StorageContainerName -Blob "Server2025_Baseline.zip" -Permission r -Context $StorageCtx -StartTime $StartTime -ExpiryTime $EndTime -FullUri
 
-# 5. Create Policy Definition using SPLATTING
+# 5. Create Policy Definition
 Write-Host "Creating Azure Policy Definition..."
 $PolicyDir = Join-Path $WorkDir "Policy"
 New-Item $PolicyDir -ItemType Directory -Force | Out-Null
 
-# Set path to our downloaded modules so GuestConfiguration loads correctly
+# Temporarily switch to clean module path to ensure we load the downloaded GuestConfig module
 $env:PSModulePath = "$ModuleDir;C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
 Import-Module GuestConfiguration -Force
 
@@ -160,32 +160,38 @@ $PolicyParams = @{
     Path            = $PolicyDir
     Platform        = "Windows"
     Mode            = "ApplyAndAutoCorrect"
-    PolicyVersion   = "1.0.0"               # FIX: Added required Version
-    PolicyId        = (New-Guid).ToString() # FIX: Added required GUID
+    PolicyVersion   = "1.0.0"
+    PolicyId        = (New-Guid).ToString()
     Verbose         = $true
 }
 
-# Check if this version supports ContentHash (some do, some don't)
 if (Get-Help New-GuestConfigurationPolicy -Parameter ContentHash -ErrorAction SilentlyContinue) {
     $PolicyParams['ContentHash'] = $ContentHash
 }
 
-# Execute
 New-GuestConfigurationPolicy @PolicyParams
 
 # 6. Publish
 $PolicyJson = Get-ChildItem "$PolicyDir\*.json" | Select-Object -First 1
 Write-Host "Publishing Policy JSON: $($PolicyJson.Name)..."
 
-# Ensure the module is still loaded and command is available
-if (-not (Get-Command Publish-GuestConfigurationPolicy -ErrorAction SilentlyContinue)) {
-    Import-Module GuestConfiguration -Force
+# CRITICAL FIX: Ensure the module is loaded from the SPECIFIC temporary path
+# We must do this before restoring the default module path
+$GuestConfigPsd1 = Join-Path $ModuleDir "GuestConfiguration"
+$GuestConfigPsd1 = Get-ChildItem "$GuestConfigPsd1\*\GuestConfiguration.psd1" | Select-Object -First 1 -ExpandProperty FullName
+
+if ($GuestConfigPsd1) {
+    Write-Host "   [Importing] $GuestConfigPsd1"
+    Import-Module $GuestConfigPsd1 -Force
+} else {
+    Throw "Could not find GuestConfiguration module in $ModuleDir"
 }
 
-Publish-GuestConfigurationPolicy -Path $PolicyJson.FullName -Verbose
-
-# 7. Restore Module Path (ONLY AFTER EVERYTHING IS DONE)
+# Restore Module Path so 'Az' and other system modules work correctly during publish
 $env:PSModulePath = [Environment]::GetEnvironmentVariable("PSModulePath", "Machine")
+
+# Execute Publish
+Publish-GuestConfigurationPolicy -Path $PolicyJson.FullName -Verbose
 
 Write-Host "`n----------------------------------------------------------------"
 Write-Host "SUCCESS! Policy '$PolicyName' created." -ForegroundColor Green
